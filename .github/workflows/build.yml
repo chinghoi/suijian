@@ -47,8 +47,10 @@ jobs:
         if: matrix.build_type == 'macos'
         run: |
           pyinstaller --noconfirm --onedir --windowed --name "DJI智能剪辑大师" \
+            --icon "assets/icon.icns" \
             --add-data "qml:qml" \
             --add-data "backend:backend" \
+            --add-data "assets:assets" \
             main.py
           hdiutil create -volname "DJI智能剪辑大师" -srcfolder dist/DJI智能剪辑大师.app -ov -format UDZO DJI-Editor-macOS.dmg
 
@@ -56,8 +58,10 @@ jobs:
         if: matrix.build_type == 'windows'
         run: |
           pyinstaller --noconfirm --onedir --windowed --name "DJIEditor" `
+            --icon "assets/icon.ico" `
             --add-data "qml;qml" `
             --add-data "backend;backend" `
+            --add-data "assets;assets" `
             main.py
           Compress-Archive -Path dist/DJIEditor/* -DestinationPath DJI-Editor-Windows.zip
 
@@ -65,8 +69,10 @@ jobs:
         if: matrix.build_type == 'linux'
         run: |
           pyinstaller --noconfirm --onedir --windowed --name "DJIEditor" \
+            --icon "assets/icon.png" \
             --add-data "qml:qml" \
             --add-data "backend:backend" \
+            --add-data "assets:assets" \
             main.py
           tar -czvf DJI-Editor-Linux.tar.gz -C dist/DJIEditor .
 
