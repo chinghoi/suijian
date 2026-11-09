@@ -43,6 +43,8 @@ signals:
     void speechSegmentsReady(const QString &videoPath, const QVariantList &segments);
     void deviceDisconnected(const QString &deviceName);
     void deviceReconnected(const QString &deviceName, const QVariantMap &diff);
+    void usbDeviceDetected(const QString &deviceName, const QString &mediaDir, int fileCount);
+    void usbDeviceRemoved(const QString &deviceName);
     void exportProgress(double percent, const QString &stepText);
     void exportFinished(const QString &outputPath);
 

@@ -126,7 +126,89 @@ def save_recent_dir(d):
     except Exception:
         pass
 
+def scan_camera_volumes():
+    r"""
+    跨平台扫描已挂载的相机存储外设与可移动磁盘
+    macOS: /Volumes/*
+    Windows: D:\ ~ Z:\
+    Linux: /media/*, /run/media/*, /mnt/*
+    """
+    found = []
+    candidates = []
+    if sys.platform == 'darwin':
+        for v in glob.glob('/Volumes/*'):
+            b = os.path.basename(v)
+            if b in ('Macintosh HD', 'Recovery', 'Preboot', 'VM', 'Update'):
+                continue
+            candidates.append((b, v))
+    elif sys.platform == 'win32':
+        import string
+        for l in string.ascii_uppercase[2:]:
+            root = f"{l}:\\"
+            if os.path.exists(root):
+                candidates.append((f"Disk ({l}:)", root))
+    else:
+        for p in glob.glob('/media/*/*') + glob.glob('/run/media/*/*'):
+            if os.path.isdir(p):
+                candidates.append((os.path.basename(p), p))
+
+    valid_exts = ('.mp4', '.mov', '.mkv', '.m4v')
+    for name, v_root in candidates:
+        if not os.path.exists(v_root):
+            continue
+        media_dir = ''
+        files = []
+        dcim = os.path.join(v_root, 'DCIM')
+        if os.path.exists(dcim):
+            for sub in sorted(glob.glob(os.path.join(dcim, '*'))):
+                if os.path.isdir(sub):
+                    try:
+                        vids = [f for f in os.listdir(sub) if f.lower().endswith(valid_exts) and not f.startswith('.')]
+                        if vids:
+                            media_dir = sub
+                            files.extend(vids)
+                    except Exception:
+                        pass
+            if not media_dir:
+                try:
+                    vids = [f for f in os.listdir(dcim) if f.lower().endswith(valid_exts) and not f.startswith('.')]
+                    if vids:
+                        media_dir = dcim
+                        files.extend(vids)
+                except Exception:
+                    pass
+        if not media_dir:
+            sony_dir = os.path.join(v_root, 'PRIVATE', 'M4ROOT', 'CLIP')
+            if os.path.exists(sony_dir):
+                try:
+                    vids = [f for f in os.listdir(sony_dir) if f.lower().endswith(valid_exts) and not f.startswith('.')]
+                    if vids:
+                        media_dir = sony_dir
+                        files.extend(vids)
+                except Exception:
+                    pass
+        if not media_dir:
+            try:
+                vids = [f for f in os.listdir(v_root) if f.lower().endswith(valid_exts) and not f.startswith('.')]
+                if vids:
+                    media_dir = v_root
+                    files.extend(vids)
+            except Exception:
+                pass
+        if media_dir and files:
+            found.append({
+                'dev_name': name,
+                'root': v_root,
+                'media_dir': media_dir,
+                'count': len(files)
+            })
+    return found
+
+
 def find_dji_paths():
+    scanned = scan_camera_volumes()
+    if scanned:
+        return scanned[0]["media_dir"]
     candidates = [DEFAULT_CARD_DIR]
     for v in glob.glob('/Volumes/*'):
         dcim = os.path.join(v, 'DCIM')
@@ -235,6 +317,8 @@ def clear_ai_checkpoint():
 class DeviceHealthManager(QThread):
     deviceDisconnected = Signal(str)
     deviceReconnected = Signal(str, dict)
+    usbDeviceDetected = Signal(str, str, int)  # dev_name, media_dir, file_count
+    usbDeviceRemoved = Signal(str)            # dev_name
 
     def __init__(self, bridge):
         super().__init__()
@@ -243,6 +327,7 @@ class DeviceHealthManager(QThread):
         self.known_fingerprints = {}
         self.is_online = True
         self._running = True
+        self._known_volumes = {}
 
     def set_monitored_root(self, root_path, media_list):
         self.active_root = root_path
@@ -264,8 +349,32 @@ class DeviceHealthManager(QThread):
         self._running = False
 
     def run(self):
+        try:
+            initial = scan_camera_volumes()
+            for d in initial:
+                self._known_volumes[d["root"]] = d
+        except Exception:
+            pass
+
         while self._running:
             try:
+                # 1. 跨平台实时扫描相机及移动外设插拔
+                current_devices = scan_camera_volumes()
+                cur_roots = {d["root"]: d for d in current_devices}
+
+                # 插入识别
+                for r, info in cur_roots.items():
+                    if r not in self._known_volumes:
+                        self._known_volumes[r] = info
+                        self.usbDeviceDetected.emit(info["dev_name"], info["media_dir"], info["count"])
+
+                # 拔出识别
+                for r in list(self._known_volumes.keys()):
+                    if r not in cur_roots:
+                        old_info = self._known_volumes.pop(r)
+                        self.usbDeviceRemoved.emit(old_info["dev_name"])
+
+                # 2. 检查当前被编辑素材所在根目录的存活状态
                 if self.active_root:
                     now_online = os.path.exists(self.active_root)
                     if self.is_online and not now_online:
@@ -282,9 +391,9 @@ class DeviceHealthManager(QThread):
                         dev_name = os.path.basename(self.active_root) or self.active_root
                         diff = self.reconcile_assets()
                         self.deviceReconnected.emit(dev_name, diff)
-            except Exception as e:
+            except Exception:
                 pass
-            time.sleep(1.5)
+            time.sleep(1.2)
 
     def reconcile_assets(self):
         missing = []
@@ -412,28 +521,90 @@ class AiScreeningWorker(QThread):
             self.progress.emit((idx / total) * 100.0, f"AI 智能筛选镜头 [{idx+1}/{total}]: {meta['filename']}")
             dur = meta["duration"]
 
-            # ===== 口播连贯识别模式 (mode "4") =====
-            if self.ai_mode == "4" and dur > 2.0:
+            # ===== 1. 口播模式 (mode 4) 或 深度综合多模态混合模式 (mode 3) =====
+            speech_clips = []
+            annotated_segs = []
+            if self.ai_mode in ("3", "4") and dur > 2.0:
                 def _speech_progress(pct, msg):
-                    overall = ((idx + pct) / total) * 100.0
+                    overall = ((idx + pct * 0.6) / total) * 100.0
                     self.progress.emit(overall, msg)
 
                 speech_clips, annotated_segs = run_speech_pipeline(
                     path, meta, progress_callback=_speech_progress
                 )
+                if annotated_segs:
+                    self.speechSegmentsReady.emit(path, annotated_segs)
+
+            # 模式 4：纯口播智能粗剪
+            if self.ai_mode == "4":
                 if speech_clips:
                     self._tasks.extend(speech_clips)
-                    if annotated_segs:
-                        self.speechSegmentsReady.emit(path, annotated_segs)
                     save_ai_checkpoint(self.selected_paths, idx + 1, self._tasks)
                     continue
-                # 口播识别无结果则 fallback 到混合模式
 
-            # 静止/抖动与语音切分逻辑
+            # 模式 3：深度综合多模态混合 (口播主体 + 间歇优质空镜抽选 + 静音死寂剔除)
+            if self.ai_mode == "3" and speech_clips:
+                current_file_tasks = list(speech_clips)
+
+                # 计算人声区间之外的间歇段落 (大于 3.5 秒的停顿或空镜)
+                covered_spans = [(c["start"], c["end"]) for c in speech_clips]
+                covered_spans.sort(key=lambda x: x[0])
+
+                gaps = []
+                cur_pos = 0.0
+                for s_st, s_en in covered_spans:
+                    if s_st - cur_pos >= 3.5:
+                        gaps.append((cur_pos, s_st))
+                    cur_pos = max(cur_pos, s_en)
+                if dur - cur_pos >= 3.5:
+                    gaps.append((cur_pos, dur))
+
+                # 对空镜间隙执行 Apple 神经网络视觉审美抽样
+                if os.path.exists(ANALYZER_BIN):
+                    for g_st, g_en in gaps:
+                        if self._is_cancelled or self._is_paused:
+                            break
+                        gap_mid = (g_st + g_en) / 2.0
+                        tmp_j = f"/tmp/dji_plan_samp_{os.getpid()}_{int(gap_mid)}.jpg"
+                        cmd_j = ['ffmpeg', '-y', '-ss', str(gap_mid), '-i', path, '-vframes', '1', '-vf', 'scale=480:-1', '-q:v', '5', tmp_j]
+                        subprocess.run(cmd_j, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if os.path.exists(tmp_j):
+                            try:
+                                res_j = subprocess.check_output([ANALYZER_BIN, tmp_j], stderr=subprocess.DEVNULL).decode()
+                                data_j = json.loads(res_j)
+                                if data_j.get('is_scenic') or data_j.get('aesthetics', 0) > 0.45:
+                                    broll_dur = min(g_en - g_st, 6.0)
+                                    broll_start = round(g_st + 0.5, 2)
+                                    broll_end = round(broll_start + broll_dur, 2)
+                                    current_file_tasks.append({
+                                        "src": path,
+                                        "filename": meta["filename"],
+                                        "start": broll_start,
+                                        "end": broll_end,
+                                        "dur": round(broll_end - broll_start, 2),
+                                        "dur_str": f"{broll_end - broll_start:.1f}s",
+                                        "orient": meta["orient"],
+                                        "is_10bit": meta["is_10bit"],
+                                        "thumb": meta["thumb"],
+                                        "transpose": meta.get("transpose"),
+                                        "text": "精选空镜 B-Roll",
+                                        "subtitles": []
+                                    })
+                            except Exception:
+                                pass
+                            finally:
+                                try: os.remove(tmp_j)
+                                except Exception: pass
+
+                current_file_tasks.sort(key=lambda x: x["start"])
+                self._tasks.extend(current_file_tasks)
+                save_ai_checkpoint(self.selected_paths, idx + 1, self._tasks)
+                continue
+
+            # 纯语音静音检测 (模式 2，或模式 3 无人声时的兜底)
             voice_blocks = []
             scenic_blocks = []
 
-            # 语音检测
             if self.ai_mode in ("2", "3") and dur > 3.0:
                 try:
                     cmd_s = ['ffmpeg', '-i', path, '-af', 'silencedetect=noise=-30dB:d=0.8', '-f', 'null', '-']
@@ -458,7 +629,7 @@ class AiScreeningWorker(QThread):
                 except Exception:
                     pass
 
-            # CoreML / 视觉审美分析
+            # CoreML / 视觉审美分析 (模式 1，或模式 3 无人声时的兜底)
             if self.ai_mode in ("1", "3") and os.path.exists(ANALYZER_BIN):
                 sample_step = max(8.0, dur / 6.0)
                 sp_times = [t for t in range(2, int(max(3, dur - 2)), int(sample_step))]
@@ -514,8 +685,44 @@ class AiScreeningWorker(QThread):
             # 每处理完一个视频，立即存盘检查点，确保误拔或断开时零损失
             save_ai_checkpoint(self.selected_paths, idx + 1, self._tasks)
 
+        # 目标成片节奏 / 时长预算控制 (max_dur > 0 时生效)
+        if self.max_dur > 0 and self._tasks:
+            total_current_dur = sum(c.get("dur", 0.0) for c in self._tasks)
+            if total_current_dur > self.max_dur:
+                # 优先保留有口播叙事的片段，其次保留高美学空镜
+                speech_tasks = [t for t in self._tasks if t.get("text") and t.get("text") != "精选空镜 B-Roll"]
+                scenic_tasks = [t for t in self._tasks if not (t.get("text") and t.get("text") != "精选空镜 B-Roll")]
+
+                budget_left = self.max_dur
+                selected_speech = []
+                for st in speech_tasks:
+                    if budget_left - st.get("dur", 0.0) >= -5.0:
+                        selected_speech.append(st)
+                        budget_left -= st.get("dur", 0.0)
+                    else:
+                        break
+
+                selected_scenic = []
+                for sc in scenic_tasks:
+                    if budget_left - sc.get("dur", 0.0) >= 0:
+                        selected_scenic.append(sc)
+                        budget_left -= sc.get("dur", 0.0)
+                    elif budget_left > 2.0:
+                        trimmed_dur = round(budget_left, 2)
+                        sc_copy = dict(sc)
+                        sc_copy["end"] = round(sc_copy["start"] + trimmed_dur, 2)
+                        sc_copy["dur"] = trimmed_dur
+                        sc_copy["dur_str"] = f"{trimmed_dur:.1f}s"
+                        selected_scenic.append(sc_copy)
+                        budget_left = 0
+                        break
+
+                final_tasks = selected_speech + selected_scenic
+                final_tasks.sort(key=lambda x: (x.get("src", ""), x.get("start", 0.0)))
+                self._tasks = final_tasks
+
         clear_ai_checkpoint()
-        self.progress.emit(100.0, f"完成筛选，共生成 {len(self._tasks)} 段精选镜头")
+        self.progress.emit(100.0, f"完成初筛，共生成 {len(self._tasks)} 段精选镜头")
         self.finished.emit(self._tasks)
 
 
@@ -665,6 +872,8 @@ class EditorBridge(QObject):
     aiPaused = Signal(int, int, str)
     aiResumed = Signal()
     speechSegmentsReady = Signal(str, list)  # video_path, annotated word segments
+    usbDeviceDetected = Signal(str, str, int)  # dev_name, media_dir, file_count
+    usbDeviceRemoved = Signal(str)            # dev_name
     deviceDisconnected = Signal(str)
     deviceReconnected = Signal(str, dict)
     checkpointDetected = Signal(int, int)
@@ -678,18 +887,33 @@ class EditorBridge(QObject):
         self._scan_worker = None
         self._ai_worker = None
         self._export_worker = None
+        self.current_media_pool = []
         self._health_manager = DeviceHealthManager(self)
         self._health_manager.deviceDisconnected.connect(self._on_device_disconnected)
         self._health_manager.deviceReconnected.connect(self._on_device_reconnected)
+        self._health_manager.usbDeviceDetected.connect(self._on_usb_device_detected)
+        self._health_manager.usbDeviceRemoved.connect(self._on_usb_device_removed)
         self._health_manager.start()
+
+    def _on_usb_device_detected(self, dev_name, media_dir, file_count):
+        self.usbDeviceDetected.emit(dev_name, media_dir, file_count)
+        if not self.current_media_pool:
+            self.statusMessage.emit(f"自动识别到已连接相机 [{dev_name}] ({file_count} 个素材)，已自动载入")
+            self.importPaths([media_dir])
+        else:
+            self.statusMessage.emit(f"检测到新接入相机外设 [{dev_name}] ({file_count} 个素材)")
+
+    def _on_usb_device_removed(self, dev_name):
+        self.usbDeviceRemoved.emit(dev_name)
+        self.statusMessage.emit(f"存储设备 [{dev_name}] 已从系统拔出移除")
 
     def _on_device_disconnected(self, dev_name):
         self.deviceDisconnected.emit(dev_name)
-        self.statusMessage.emit(f"⚠️ 设备 [{dev_name}] 已断开（拔出/录像中）· 任务已安全挂起")
+        self.statusMessage.emit(f"设备 [{dev_name}] 已断开（拔出/录像中）· 任务已安全挂起")
 
     def _on_device_reconnected(self, dev_name, diff):
         self.deviceReconnected.emit(dev_name, diff)
-        self.statusMessage.emit(f"✅ 设备 [{dev_name}] 已重新连接！")
+        self.statusMessage.emit(f"设备 [{dev_name}] 已重新连接！")
 
     def close(self):
         if hasattr(self, "_health_manager") and self._health_manager:
@@ -730,6 +954,7 @@ class EditorBridge(QObject):
         self._scan_worker.start()
 
     def _on_import_finished(self, dates, media_list, source_label):
+        self.current_media_pool = media_list
         self.mediaLoaded.emit(dates, media_list, source_label)
         self.loadRecentDirs()
         root_dir = source_label if (source_label and os.path.exists(source_label)) else ""
@@ -742,13 +967,23 @@ class EditorBridge(QObject):
 
     @Slot()
     def detectDji(self):
-        found = find_dji_paths()
-        if found:
-            self.djiFound.emit(found)
-            self.statusMessage.emit(f"检测到已连接的 DJI 相机存储卡: {found}")
+        devices = scan_camera_volumes()
+        if devices:
+            dev = devices[0]
+            self.djiFound.emit(dev["media_dir"])
+            self.statusMessage.emit(f"检测到已连接的相机外设: {dev['dev_name']} ({dev['count']} 个视频)")
+            if not self.current_media_pool:
+                self.importPaths([dev["media_dir"]])
         else:
-            self.djiFound.emit("")
-            self.statusMessage.emit("未检测到连接的 DJI 相机，可手动选择文件夹或视频")
+            found = find_dji_paths()
+            if found:
+                self.djiFound.emit(found)
+                self.statusMessage.emit(f"检测到已连接的相机存储卡: {found}")
+                if not self.current_media_pool:
+                    self.importPaths([found])
+            else:
+                self.djiFound.emit("")
+                self.statusMessage.emit("未检测到连接的相机外设，可手动选择文件夹或视频")
 
     @Slot()
     def loadRecentDirs(self):
@@ -771,20 +1006,20 @@ class EditorBridge(QObject):
     def pauseAiScreening(self, reason="用户主动暂停"):
         if self._ai_worker and self._ai_worker.isRunning():
             self._ai_worker.pause(reason)
-            self.statusMessage.emit(f"⏸️ AI 任务已暂停 ({reason}) · 断点已安全存盘")
+            self.statusMessage.emit(f"AI 任务已暂停 ({reason}) · 断点已安全存盘")
 
     @Slot()
     def resumeAiScreening(self):
         if self._ai_worker and self._ai_worker.isRunning():
             self._ai_worker.resume()
-            self.statusMessage.emit("▶️ AI 任务已从断点恢复执行")
+            self.statusMessage.emit("AI 任务已从断点恢复执行")
 
     @Slot()
     def safeEjectDevice(self):
         """用户主动请求安全拔出设备去录像"""
         if self._ai_worker and self._ai_worker.isRunning():
             self._ai_worker.pause("准备拔出设备录像")
-        self.statusMessage.emit("✅ 检查点已留存！现在可安全拔出相机去录像，插回后可随时续接。")
+        self.statusMessage.emit("检查点已留存！现在可安全拔出相机去录像，插回后可随时续接。")
 
     @Slot(result=bool)
     def hasCheckpoint(self):

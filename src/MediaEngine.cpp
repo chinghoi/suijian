@@ -217,6 +217,25 @@ void MediaEngine::importPaths(const QStringList &paths) {
 }
 
 void MediaEngine::checkDeviceHeartbeat() {
+#if defined(Q_OS_MAC)
+    QDir volumesDir("/Volumes");
+    for (const auto &entry : volumesDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        QString b = entry.fileName();
+        if (b == "Macintosh HD" || b == "Recovery" || b == "Preboot" || b == "VM") continue;
+        QString dcim = entry.absoluteFilePath() + "/DCIM";
+        if (QDir(dcim).exists()) {
+            QDir d(dcim);
+            for (const auto &sub : d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+                QStringList vids = QDir(sub.absoluteFilePath()).entryList(QStringList() << "*.MP4" << "*.mp4" << "*.MOV" << "*.mov", QDir::Files);
+                if (!vids.isEmpty()) {
+                    emit usbDeviceDetected(b, sub.absoluteFilePath(), vids.size());
+                    break;
+                }
+            }
+        }
+    }
+#endif
+
     if (m_activeDeviceRoot.isEmpty()) return;
     QDir d(m_activeDeviceRoot);
     bool online = d.exists();

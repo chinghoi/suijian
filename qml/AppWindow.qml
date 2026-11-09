@@ -53,6 +53,7 @@ ApplicationWindow {
     // 口播识别与字幕状态
     property var speechAnnotations: ({})  // { videoPath: [annotated segments] }
     property string currentSubtitleText: ""  // 当前播放位置的字幕文本
+    property var pendingUsbDevice: null
 
     function pushUndoState(actionName) {
         var snapshot = {
@@ -395,7 +396,7 @@ ApplicationWindow {
         function onDjiFound(path) {
             root.detectedDjiPath = path
             if (path && root.mediaPool.length === 0) {
-                statusBanner.show("💡 检测到 DJI 相机已插入: " + path)
+                statusBanner.show("检测到相机外设已接入: " + path)
             }
         }
 
@@ -408,7 +409,20 @@ ApplicationWindow {
         }
 
         function onScanError(err) {
-            statusBanner.show("⚠️ 提示: " + err)
+            statusBanner.show("提示: " + err)
+        }
+
+        function onUsbDeviceDetected(devName, mediaDir, fileCount) {
+            if (root.mediaPool.length === 0) {
+                statusBanner.show("已自动识别并载入相机外设 [" + devName + "] (" + fileCount + " 个视频)")
+            } else {
+                root.pendingUsbDevice = { name: devName, dir: mediaDir, count: fileCount }
+                usbNewDeviceDialog.open()
+            }
+        }
+
+        function onUsbDeviceRemoved(devName) {
+            statusBanner.show("设备 [" + devName + "] 已从系统移除")
         }
 
         function onAiProgress(percent, stepText) {
@@ -422,25 +436,25 @@ ApplicationWindow {
             root.timelineClips = tasks
             if (tasks.length > 0) {
                 root.loadActiveClip(0, false)
-                statusBanner.show("✨ AI 自动筛选完成，共剪辑出 " + tasks.length + " 段精彩镜头！")
+                statusBanner.show("AI 自动筛选完成，共剪辑出 " + tasks.length + " 段精彩镜头！")
             } else {
                 statusBanner.show("未筛选到片段，请检查筛选参数")
             }
         }
 
         function onAiPaused(completed, total, reason) {
-            aiModal.statusText = "⏸️ 任务已安全暂停 (" + reason + ") · 进度已留存 (" + completed + "/" + total + ")"
-            statusBanner.show("⏸️ 初筛任务已安全暂存检查点，插回相机即可继续")
+            aiModal.statusText = "任务已安全暂停 (" + reason + ") · 进度已留存 (" + completed + "/" + total + ")"
+            statusBanner.show("初筛任务已安全暂存检查点，插回相机即可继续")
         }
 
         function onAiResumed() {
-            statusBanner.show("▶️ 已从断点继续执行 AI 任务")
+            statusBanner.show("已从断点继续执行 AI 任务")
         }
 
         function onDeviceDisconnected(devName) {
             root.isDeviceDisconnected = true
             root.disconnectedDeviceName = devName
-            statusBanner.show("⚠️ 存储设备 [" + devName + "] 已断开（拔出录像中）· 任务已安全挂起")
+            statusBanner.show("存储设备 [" + devName + "] 已断开（拔出录像中）· 任务已安全挂起")
             if (player.playbackState === MediaPlayer.PlayingState) player.pause()
         }
 
@@ -455,9 +469,9 @@ ApplicationWindow {
                 root.missingPathsMap = missingMap
                 reconciliationDialog.open()
             } else if (diff.new_count > 0) {
-                statusBanner.show("💡 设备已重新连接！相机内发现 " + diff.new_count + " 个新视频（未打乱当前工程）")
+                statusBanner.show("设备已重新连接！相机内发现 " + diff.new_count + " 个新视频（未打乱当前工程）")
             } else {
-                statusBanner.show("✅ 设备已重新连接，全部 " + root.mediaPool.length + " 个素材完好在线！")
+                statusBanner.show("设备已重新连接，全部 " + root.mediaPool.length + " 个素材完好在线！")
             }
         }
 
@@ -468,12 +482,12 @@ ApplicationWindow {
 
         function onExportFinished(outPath) {
             exportModal.close()
-            statusBanner.show("🎉 导出成功: " + outPath)
+            statusBanner.show("导出成功: " + outPath)
         }
 
         function onExportFailed(err) {
             exportModal.close()
-            statusBanner.show("❌ 导出失败: " + err)
+            statusBanner.show("导出失败: " + err)
         }
 
         function onSpeechSegmentsReady(videoPath, segments) {
@@ -487,7 +501,6 @@ ApplicationWindow {
     Component.onCompleted: {
         bridge.loadRecentDirs()
         bridge.detectDji()
-        bridge.scanDirectory("")
     }
 
     // 快捷键
@@ -547,7 +560,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             spacing: 14
 
-            Text { Layout.alignment: Qt.AlignHCenter; text: "📥"; font.pixelSize: 54 }
+            Text { Layout.alignment: Qt.AlignHCenter; text: "+"; font.pixelSize: 54 }
             Text { Layout.alignment: Qt.AlignHCenter; text: "松开鼠标即可瞬间导入视频素材"; color: "#38bdf8"; font.bold: true; font.pixelSize: 20 }
             Text { Layout.alignment: Qt.AlignHCenter; text: "支持拖入单个/多个 .MP4 / .MOV 视频文件，或直接拖入整个文件夹"; color: "#94a3b8"; font.pixelSize: 13 }
         }
@@ -575,7 +588,7 @@ ApplicationWindow {
                 spacing: root.isMobileMode ? 8 : 10
 
                 Text {
-                    text: root.isMobileMode ? "随剪" : "🎬 随剪"
+                    text: root.isMobileMode ? "随剪" : "随剪"
                     color: "#ffffff"
                     font.bold: true
                     font.pixelSize: root.isMobileMode ? 14 : 16
@@ -610,7 +623,7 @@ ApplicationWindow {
 
                 // AI 智能初筛按钮
                 Button {
-                    text: "✨ AI 智能初筛"
+                    text: "AI 智能初筛"
                     onClicked: aiModal.open()
                     background: Rectangle { color: parent.hovered ? "#4338ca" : "#3730a3"; radius: 5 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -618,7 +631,7 @@ ApplicationWindow {
 
                 // 导出大按钮
                 Button {
-                    text: root.isMobileMode ? "🚀 导出" : "🚀 导出 4K60 10-Bit 母带"
+                    text: root.isMobileMode ? "导出" : "导出 4K60 10-Bit 母带"
                     onClicked: exportModal.open()
                     background: Rectangle {
                         radius: 5
@@ -649,14 +662,14 @@ ApplicationWindow {
                 spacing: 10
 
                 Text {
-                    text: "⚠️ 存储设备 [" + (root.disconnectedDeviceName || "相机/SD卡") + "] 已断开（拔出/录像中）· 时间线与初筛断点已安全保护留存，插回即可一键恢复"
+                    text: "存储设备 [" + (root.disconnectedDeviceName || "相机/SD卡") + "] 已断开（拔出/录像中）· 时间线与初筛断点已安全保护留存，插回即可一键恢复"
                     color: "#fecaca"
                     font.bold: true
                     font.pixelSize: 12
                 }
                 Item { Layout.fillWidth: true }
                 Button {
-                    text: "🔄 检测设备重连"
+                    text: "检测设备重连"
                     onClicked: bridge.detectDji()
                     background: Rectangle { color: "#991b1b"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -665,11 +678,11 @@ ApplicationWindow {
         }
 
         // 2. 核心工作台视图分支：
-        //    分支 A: 📱 移动端布局 (isMobileMode == true)
-        //    分支 B: 💻 桌面端三栏布局 (isMobileMode == false)
+        //    分支 A: 移动端布局 (isMobileMode == true)
+        //    分支 B: 桌面端三栏布局 (isMobileMode == false)
 
         // ------------------------------------------
-        // 分支 A: 📱 移动端专业流体布局
+        // 分支 A: 移动端专业流体布局
         // ------------------------------------------
         ColumnLayout {
             visible: root.isMobileMode
@@ -792,7 +805,7 @@ ApplicationWindow {
                     Item { Layout.fillWidth: true }
 
                     Button {
-                        text: root.isContinuousPlay ? "🔁 连续" : "🔂 单段"
+                        text: root.isContinuousPlay ? "连续" : "单段"
                         Layout.preferredHeight: 28
                         onClicked: root.isContinuousPlay = !root.isContinuousPlay
                         background: Rectangle { color: root.isContinuousPlay ? "#1d4ed8" : "#334155"; radius: 4 }
@@ -806,7 +819,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
 
-                // Tab 0: 🎞️ 移动端剪辑与时间线微调
+                // Tab 0: 移动端剪辑与时间线微调
                 ColumnLayout {
                     anchors.fill: parent
                     visible: root.mobileTab === 0
@@ -844,7 +857,7 @@ ApplicationWindow {
                                     ColumnLayout {
                                         anchors.centerIn: parent
                                         spacing: 2
-                                        Text { text: "⚠️"; font.pixelSize: 16; Layout.alignment: Qt.AlignHCenter }
+                                        Text { text: "[离线]"; color: "#ef4444"; font.bold: true; font.pixelSize: 12; Layout.alignment: Qt.AlignHCenter }
                                         Text { text: "原素材已失效"; color: "#fca5a5"; font.bold: true; font.pixelSize: 9; Layout.alignment: Qt.AlignHCenter }
                                     }
                                 }
@@ -900,19 +913,19 @@ ApplicationWindow {
                             contentItem: Text { text: parent.text; color: root.canRedo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
-                            text: "✂️ 分割"; Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "分割"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.splitCurrentClip()
                             background: Rectangle { color: "#854d0e"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
-                            text: "➕ 复制"; Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "复制"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.duplicateCurrentClip()
                             background: Rectangle { color: "#1e3a8a"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
-                            text: "🗑️ 删除"; Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "删除"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.deleteCurrentClip()
                             background: Rectangle { color: "#7f1d1d"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -970,7 +983,7 @@ ApplicationWindow {
                     }
                 }
 
-                // Tab 1: 📁 移动端素材池
+                // Tab 1: 移动端素材池
                 ColumnLayout {
                     anchors.fill: parent
                     visible: root.mobileTab === 1
@@ -984,7 +997,7 @@ ApplicationWindow {
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
                             Text {
-                                text: "📁 素材池 (" + root.mediaPool.length + ")"
+                                text: "素材池 (" + root.mediaPool.length + ")"
                                 color: "#ffffff"; font.bold: true; font.pixelSize: 12
                             }
                             Item { Layout.fillWidth: true }
@@ -997,9 +1010,9 @@ ApplicationWindow {
 
                                 Menu {
                                     id: mobileImportMenu
-                                    MenuItem { text: "📁 导入视频文件夹..."; onTriggered: folderDialog.open() }
-                                    MenuItem { text: "🎬 选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
-                                    MenuItem { text: "🔄 重新检测相机卡"; onTriggered: bridge.detectDji() }
+                                    MenuItem { text: "导入视频文件夹..."; onTriggered: folderDialog.open() }
+                                    MenuItem { text: "选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
+                                    MenuItem { text: "重新检测相机卡"; onTriggered: bridge.detectDji() }
                                 }
                             }
                         }
@@ -1016,12 +1029,12 @@ ApplicationWindow {
                             spacing: 12
                             width: Math.min(360, parent.width - 24)
 
-                            Text { Layout.alignment: Qt.AlignHCenter; text: "📁"; font.pixelSize: 42 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "[素材库为空]"; color: "#64748b"; font.pixelSize: 13 }
                             Text { Layout.alignment: Qt.AlignHCenter; text: "素材库为空"; color: "#f8fafc"; font.bold: true; font.pixelSize: 15 }
                             Text { Layout.alignment: Qt.AlignHCenter; text: "请选择包含视频的目录，或直接选取视频文件"; color: "#94a3b8"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter }
 
                             Button {
-                                text: "📁 选择视频文件夹 (整个目录)"
+                                text: "选择视频文件夹 (整个目录)"
                                 Layout.fillWidth: true; Layout.preferredHeight: 40
                                 onClicked: folderDialog.open()
                                 background: Rectangle { color: "#2563eb"; radius: 6 }
@@ -1029,7 +1042,7 @@ ApplicationWindow {
                             }
 
                             Button {
-                                text: "🎬 选择特定视频文件 (可多选)"
+                                text: "选择特定视频文件 (可多选)"
                                 Layout.fillWidth: true; Layout.preferredHeight: 40
                                 onClicked: fileDialog.open()
                                 background: Rectangle { color: "#1e293b"; radius: 6; border.color: "#334155" }
@@ -1039,7 +1052,7 @@ ApplicationWindow {
                             // 相机检测提示
                             Button {
                                 visible: root.detectedDjiPath !== ""
-                                text: "💾 检测到 DJI 相机已插入 [一键载入]"
+                                text: "检测到相机已接入 [一键载入]"
                                 Layout.fillWidth: true; Layout.preferredHeight: 40
                                 onClicked: bridge.scanDirectory(root.detectedDjiPath)
                                 background: Rectangle { color: "#065f46"; radius: 6; border.color: "#10b981" }
@@ -1132,17 +1145,17 @@ ApplicationWindow {
                     }
                 }
 
-                // Tab 2: ✨ 移动端 AI 智能初筛快速操作
+                // Tab 2: 移动端 AI 智能初筛快速操作
                 ColumnLayout {
                     anchors.fill: parent
                     visible: root.mobileTab === 2
                     anchors.margins: 14
                     spacing: 12
 
-                    Text { text: "✨ AI 一键智能剪辑策略："; color: "#ffffff"; font.bold: true; font.pixelSize: 13 }
+                    Text { text: "AI 智能剪辑策略："; color: "#ffffff"; font.bold: true; font.pixelSize: 13 }
 
                     Button {
-                        text: "🗣️ 口播智能粗剪 (废句消除 / 连贯留声 / 生成字幕)"
+                        text: "口播智能粗剪 (废句消除 / 连贯留声 / 生成字幕)"
                         Layout.fillWidth: true; Layout.preferredHeight: 44
                         onClicked: {
                             bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "4", 35.0, "horizontal", "10bit")
@@ -1153,7 +1166,7 @@ ApplicationWindow {
                     }
 
                     Button {
-                        text: "🏔️ 审美风景优先 (保留优质镜头/过滤抖动)"
+                        text: "视觉审美优先 (保留优质镜头/过滤抖动)"
                         Layout.fillWidth: true; Layout.preferredHeight: 44
                         onClicked: {
                             bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "1", 35.0, "horizontal", "10bit")
@@ -1164,7 +1177,7 @@ ApplicationWindow {
                     }
 
                     Button {
-                        text: "🎙️ 语音静音切分 (无声剔除 / 智能留声)"
+                        text: "语音静音切分 (无声剔除 / 智能留声)"
                         Layout.fillWidth: true; Layout.preferredHeight: 44
                         onClicked: {
                             bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "2", 35.0, "horizontal", "10bit")
@@ -1175,7 +1188,7 @@ ApplicationWindow {
                     }
 
                     Button {
-                        text: "⚡ 深度混合推荐 (多模态高光精选)"
+                        text: "深度多模态综合混合 (多模态高光精选)"
                         Layout.fillWidth: true; Layout.preferredHeight: 44
                         onClicked: {
                             bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "3", 35.0, "horizontal", "10bit")
@@ -1188,7 +1201,7 @@ ApplicationWindow {
                     Item { Layout.fillHeight: true }
 
                     Text {
-                        text: "💡 提示：点击后将在后台全速进行高光初筛并自动将成片镜头排列至时间线。"
+                        text: "提示：点击后将在后台全速进行高光初筛并自动将成片镜头排列至时间线。"
                         color: "#64748b"; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true
                     }
                 }
@@ -1208,7 +1221,7 @@ ApplicationWindow {
                         color: root.mobileTab === 0 ? "#1e2436" : "transparent"
                         ColumnLayout {
                             anchors.centerIn: parent; spacing: 2
-                            Text { Layout.alignment: Qt.AlignHCenter; text: "🎞️"; font.pixelSize: 16 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "剪辑"; color: parent.checked ? "#38bdf8" : "#94a3b8"; font.pixelSize: 12 }
                             Text { Layout.alignment: Qt.AlignHCenter; text: "时间线 (" + root.timelineClips.length + ")"; color: root.mobileTab === 0 ? "#38bdf8" : "#94a3b8"; font.pixelSize: 10; font.bold: true }
                         }
                         MouseArea { anchors.fill: parent; onClicked: root.mobileTab = 0 }
@@ -1220,7 +1233,7 @@ ApplicationWindow {
                         color: root.mobileTab === 1 ? "#1e2436" : "transparent"
                         ColumnLayout {
                             anchors.centerIn: parent; spacing: 2
-                            Text { Layout.alignment: Qt.AlignHCenter; text: "📁"; font.pixelSize: 16 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "素材"; color: parent.checked ? "#38bdf8" : "#94a3b8"; font.pixelSize: 12 }
                             Text { Layout.alignment: Qt.AlignHCenter; text: "素材池 (" + root.getSelectedCount() + ")"; color: root.mobileTab === 1 ? "#38bdf8" : "#94a3b8"; font.pixelSize: 10; font.bold: true }
                         }
                         MouseArea { anchors.fill: parent; onClicked: root.mobileTab = 1 }
@@ -1232,7 +1245,7 @@ ApplicationWindow {
                         color: root.mobileTab === 2 ? "#1e2436" : "transparent"
                         ColumnLayout {
                             anchors.centerIn: parent; spacing: 2
-                            Text { Layout.alignment: Qt.AlignHCenter; text: "✨"; font.pixelSize: 16 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "初筛"; color: parent.checked ? "#38bdf8" : "#94a3b8"; font.pixelSize: 12 }
                             Text { Layout.alignment: Qt.AlignHCenter; text: "AI初筛"; color: root.mobileTab === 2 ? "#38bdf8" : "#94a3b8"; font.pixelSize: 10; font.bold: true }
                         }
                         MouseArea { anchors.fill: parent; onClicked: root.mobileTab = 2 }
@@ -1242,7 +1255,7 @@ ApplicationWindow {
         }
 
         // ------------------------------------------
-        // 分支 B: 💻 桌面端三栏专业工作台
+        // 分支 B: 桌面端三栏专业工作台
         // ------------------------------------------
         RowLayout {
             visible: !root.isMobileMode
@@ -1268,7 +1281,7 @@ ApplicationWindow {
                         RowLayout {
                             anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
                             Text {
-                                text: "📁 素材媒体池 (" + root.mediaPool.length + ")"
+                                text: "素材媒体池 (" + root.mediaPool.length + ")"
                                 color: "#ffffff"; font.bold: true; font.pixelSize: 12
                             }
                             Item { Layout.fillWidth: true }
@@ -1281,9 +1294,9 @@ ApplicationWindow {
 
                                 Menu {
                                     id: desktopImportMenu
-                                    MenuItem { text: "📁 导入视频文件夹..."; onTriggered: folderDialog.open() }
-                                    MenuItem { text: "🎬 选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
-                                    MenuItem { text: "🔄 重新检测相机卡"; onTriggered: bridge.detectDji() }
+                                    MenuItem { text: "导入视频文件夹..."; onTriggered: folderDialog.open() }
+                                    MenuItem { text: "选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
+                                    MenuItem { text: "重新检测相机卡"; onTriggered: bridge.detectDji() }
                                 }
                             }
                         }
@@ -1300,7 +1313,7 @@ ApplicationWindow {
                             spacing: 14
                             width: Math.min(280, parent.width - 24)
 
-                            Text { Layout.alignment: Qt.AlignHCenter; text: "📁"; font.pixelSize: 48 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "[素材库为空]"; color: "#64748b"; font.pixelSize: 13 }
                             Text { Layout.alignment: Qt.AlignHCenter; text: "素材库为空"; color: "#f8fafc"; font.bold: true; font.pixelSize: 16 }
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
@@ -1309,7 +1322,7 @@ ApplicationWindow {
                             }
 
                             Button {
-                                text: "📁 导入视频文件夹"
+                                text: "导入视频文件夹"
                                 Layout.fillWidth: true; Layout.preferredHeight: 42
                                 onClicked: folderDialog.open()
                                 background: Rectangle { color: "#2563eb"; radius: 6 }
@@ -1317,7 +1330,7 @@ ApplicationWindow {
                             }
 
                             Button {
-                                text: "🎬 选取视频文件 (支持多选)"
+                                text: "选取视频文件 (支持多选)"
                                 Layout.fillWidth: true; Layout.preferredHeight: 42
                                 onClicked: fileDialog.open()
                                 background: Rectangle { color: "#1e293b"; radius: 6; border.color: "#334155" }
@@ -1327,7 +1340,7 @@ ApplicationWindow {
                             // 插入的相机提示
                             Button {
                                 visible: root.detectedDjiPath !== ""
-                                text: "💾 发现相机卡 [一键导入]"
+                                text: "发现相机外设 [一键导入]"
                                 Layout.fillWidth: true; Layout.preferredHeight: 42
                                 onClicked: bridge.scanDirectory(root.detectedDjiPath)
                                 background: Rectangle { color: "#065f46"; radius: 6; border.color: "#10b981" }
@@ -1343,7 +1356,7 @@ ApplicationWindow {
                                     model: root.recentDirs.slice(0, 3)
                                     delegate: Button {
                                         Layout.fillWidth: true; Layout.preferredHeight: 26
-                                        text: "📂 " + modelData.split("/").pop()
+                                        text: "" + modelData.split("/").pop()
                                         onClicked: bridge.scanDirectory(modelData)
                                         background: Rectangle { color: "#181a24"; radius: 4 }
                                         contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 10; elide: Text.ElideMiddle; verticalAlignment: Text.AlignVCenter }
@@ -1528,21 +1541,21 @@ ApplicationWindow {
                             Item { Layout.fillWidth: true }
 
                             Button {
-                                text: root.isContinuousPlay ? "🔁 连续播放成片" : "🔂 单镜头循环"
+                                text: root.isContinuousPlay ? "连续播放成片" : "单镜头循环"
                                 onClicked: root.isContinuousPlay = !root.isContinuousPlay
                                 background: Rectangle { color: root.isContinuousPlay ? "#1d4ed8" : "#334155"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
 
                             Button {
-                                text: root.isTheaterMode ? "🗖 恢复视窗" : "🗖 剧场大屏"
+                                text: root.isTheaterMode ? "恢复视窗" : "剧场大屏"
                                 onClicked: root.isTheaterMode = !root.isTheaterMode
                                 background: Rectangle { color: "#222533"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
 
                             Button {
-                                text: "⛶ 全屏"
+                                text: "全屏"
                                 onClicked: {
                                     if (root.visibility === Window.FullScreen) root.visibility = Window.AutomaticVisibility
                                     else root.visibility = Window.FullScreen
@@ -1623,19 +1636,19 @@ ApplicationWindow {
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#1f222e" }
 
                     Button {
-                        text: "✂️ 在指针位置分割 (Split)"; Layout.fillWidth: true; Layout.preferredHeight: 38
+                        text: "在指针位置分割 (Split)"; Layout.fillWidth: true; Layout.preferredHeight: 38
                         onClicked: root.splitCurrentClip()
                         background: Rectangle { color: "#854d0e"; radius: 6 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                     Button {
-                        text: "➕ 此镜头再加一段 (Duplicate)"; Layout.fillWidth: true; Layout.preferredHeight: 38
+                        text: "此镜头再加一段 (Duplicate)"; Layout.fillWidth: true; Layout.preferredHeight: 38
                         onClicked: root.duplicateCurrentClip()
                         background: Rectangle { color: "#1e3a8a"; radius: 6 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                     Button {
-                        text: "🗑️ 从时间线删掉 (Delete)"; Layout.fillWidth: true; Layout.preferredHeight: 38
+                        text: "从时间线删掉 (Delete)"; Layout.fillWidth: true; Layout.preferredHeight: 38
                         onClicked: root.deleteCurrentClip()
                         background: Rectangle { color: "#7f1d1d"; radius: 6 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -1673,12 +1686,12 @@ ApplicationWindow {
                         background: Rectangle { color: root.canRedo ? "#222738" : "#141620"; radius: 4; border.color: root.canRedo ? "#475569" : "#1e2230" }
                         contentItem: Text { text: parent.text; color: root.canRedo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
-                    Button { text: "✂️ 分割 (B)"; onClicked: root.splitCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                    Button { text: "🗑️ 删除 (Del)"; onClicked: root.deleteCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "分割 (B)"; onClicked: root.splitCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "删除 (Del)"; onClicked: root.deleteCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "◀ 前移"; onClicked: root.moveCurrentClip(-1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "后移 ▶"; onClicked: root.moveCurrentClip(1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Item { Layout.fillWidth: true }
-                    Text { text: "💡 提示：双击/拖拽素材导入时间线 · 支持双指触控撤销"; color: "#64748b"; font.pixelSize: 11 }
+                    Text { text: "提示：双击/拖拽素材导入时间线 · 支持双指触控撤销"; color: "#64748b"; font.pixelSize: 11 }
                 }
 
                 ListView {
@@ -1705,7 +1718,7 @@ ApplicationWindow {
                             ColumnLayout {
                                 anchors.centerIn: parent
                                 spacing: 2
-                                Text { text: "⚠️"; font.pixelSize: 18; Layout.alignment: Qt.AlignHCenter }
+                                Text { text: "[离线]"; color: "#ef4444"; font.bold: true; font.pixelSize: 12; Layout.alignment: Qt.AlignHCenter }
                                 Text { text: "原素材已失效/被改动"; color: "#fca5a5"; font.bold: true; font.pixelSize: 10; Layout.alignment: Qt.AlignHCenter }
                             }
                         }
@@ -1774,8 +1787,8 @@ ApplicationWindow {
     Dialog {
         id: aiModal
         anchors.centerIn: parent
-        width: Math.min(480, root.width - 32); height: 340
-        modal: true; title: "✨ AI 智能初筛参数设置"
+        width: Math.min(500, root.width - 32); height: 350
+        modal: true; title: "AI 智能初筛参数设置"
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
 
         property real progress: 0.0
@@ -1787,16 +1800,20 @@ ApplicationWindow {
             ComboBox {
                 id: aiModeCombo; Layout.fillWidth: true
                 model: [
-                    "口播智能粗剪 (自动剔除废句重录 / 连贯保留 / 自动生成字幕)",
-                    "Apple 神经网络视觉审美优先 (保留好风光/抖动过滤)",
-                    "纯语音静音切分 (无声剔除)",
-                    "深度混合智能识别"
+                    "深度多模态综合混合 (推荐 · 口播连贯 + 视觉防抖美学 + 静默剔除)",
+                    "口播智能粗剪 (Vlog/访谈：剔除废话重录 / 连贯保留 / 自动生成字幕)",
+                    "视觉审美优先 (航拍/风光/运动：保留优质稳定构图，过滤抖动与废片)",
+                    "纯语音静音切分 (基础粗切：仅切除无声与死寂停顿，保留有声片段)"
                 ]
             }
-            Text { text: "导出画幅标准："; color: "#cbd5e1"; font.pixelSize: 12 }
+            Text { text: "目标成片节奏 / 期望时长："; color: "#cbd5e1"; font.pixelSize: 12 }
             ComboBox {
-                id: canvasCombo; Layout.fillWidth: true
-                model: ["3840×2160 16:9 横屏母带", "2160×3840 9:16 竖屏大片"]
+                id: targetDurationCombo; Layout.fillWidth: true
+                model: [
+                    "标准成片节奏 (约 3 ~ 5 分钟 · 完整呈现事件叙事与精彩空镜)",
+                    "短视频快节奏 (约 1 ~ 2 分钟 · 仅提取最高光核心镜头与金句)",
+                    "宽松完整保留 (不限总时长 · 仅过滤废片与重复错句)"
+                ]
             }
             ProgressBar { Layout.fillWidth: true; value: aiModal.progress / 100.0 }
             Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
@@ -1812,14 +1829,14 @@ ApplicationWindow {
                 }
 
                 Button {
-                    text: "⏸️ 暂停"
+                    text: "暂停"
                     onClicked: bridge.pauseAiScreening("用户主动暂停")
                     background: Rectangle { color: "#475569"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
 
                 Button {
-                    text: "💾 安全拔卡去录像"
+                    text: "安全拔卡去录像"
                     onClicked: bridge.safeEjectDevice()
                     background: Rectangle { color: "#065f46"; radius: 4; border.color: "#10b981" }
                     contentItem: Text { text: parent.text; color: "#6ee7b7"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -1830,15 +1847,77 @@ ApplicationWindow {
                 Button {
                     text: "开始 / 续接初筛"
                     onClicked: {
-                        var mode = "4"
-                        if (aiModeCombo.currentIndex === 0) mode = "4"
-                        else if (aiModeCombo.currentIndex === 1) mode = "1"
-                        else if (aiModeCombo.currentIndex === 2) mode = "2"
-                        else if (aiModeCombo.currentIndex === 3) mode = "3"
-                        var c = canvasCombo.currentIndex === 0 ? "horizontal" : "vertical"
-                        bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, 35.0, c, "10bit")
+                        var mode = "3"
+                        if (aiModeCombo.currentIndex === 0) mode = "3"
+                        else if (aiModeCombo.currentIndex === 1) mode = "4"
+                        else if (aiModeCombo.currentIndex === 2) mode = "1"
+                        else if (aiModeCombo.currentIndex === 3) mode = "2"
+
+                        var maxDur = 240.0
+                        if (targetDurationCombo.currentIndex === 0) maxDur = 240.0
+                        else if (targetDurationCombo.currentIndex === 1) maxDur = 90.0
+                        else if (targetDurationCombo.currentIndex === 2) maxDur = 0.0
+
+                        bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, root.masterCanvas, root.targetColor)
                     }
                     background: Rectangle { color: "#4f46e5"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+        }
+    }
+
+    // 新增外部相机接入确认弹窗 (当当前已有工程素材时提示)
+    Dialog {
+        id: usbNewDeviceDialog
+        anchors.centerIn: parent
+        width: Math.min(460, root.width - 32)
+        height: 220
+        modal: true
+        title: "检测到新相机设备已接入"
+        background: Rectangle { color: "#161822"; border.color: "#3b82f6"; radius: 10 }
+
+        ColumnLayout {
+            anchors.fill: parent; spacing: 14
+            Text {
+                text: "检测到相机外设 [" + (root.pendingUsbDevice ? root.pendingUsbDevice.name : "") + "] 接入，包含 " + (root.pendingUsbDevice ? root.pendingUsbDevice.count : 0) + " 个视频素材。"
+                color: "#f8fafc"; font.pixelSize: 13; wrapMode: Text.WordWrap; Layout.fillWidth: true
+            }
+            Text {
+                text: "是否载入此相机素材到工作区？"
+                color: "#94a3b8"; font.pixelSize: 12
+            }
+            Item { Layout.fillHeight: true }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 10
+                Button {
+                    text: "暂不处理"
+                    onClicked: usbNewDeviceDialog.close()
+                    background: Rectangle { color: "#334155"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#cbd5e1"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "追加载入"
+                    onClicked: {
+                        if (root.pendingUsbDevice && root.pendingUsbDevice.dir) {
+                            bridge.importPaths([root.pendingUsbDevice.dir])
+                        }
+                        usbNewDeviceDialog.close()
+                    }
+                    background: Rectangle { color: "#0ea5e9"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button {
+                    text: "切换到新相机"
+                    onClicked: {
+                        if (root.pendingUsbDevice && root.pendingUsbDevice.dir) {
+                            root.timelineClips = []
+                            bridge.importPaths([root.pendingUsbDevice.dir])
+                        }
+                        usbNewDeviceDialog.close()
+                    }
+                    background: Rectangle { color: "#2563eb"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
             }
@@ -1852,7 +1931,7 @@ ApplicationWindow {
         width: Math.min(540, root.width - 32)
         height: Math.min(460, root.height - 40)
         modal: true
-        title: "💾 相机存储设备已重连 · 媒体资产审计报告"
+        title: "相机存储设备已重连 · 媒体资产审计报告"
         background: Rectangle { color: "#161822"; border.color: "#3b82f6"; radius: 10 }
 
         ColumnLayout {
@@ -1873,7 +1952,7 @@ ApplicationWindow {
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 10; spacing: 6
                     RowLayout {
-                        Text { text: "⚠️ 警告：检测到以下源素材已被移除或被覆写修改（等同移除）："; color: "#fca5a5"; font.bold: true; font.pixelSize: 11 }
+                        Text { text: "警告：检测到以下源素材已被移除或被覆写修改（等同移除）："; color: "#fca5a5"; font.bold: true; font.pixelSize: 11 }
                     }
                     ListView {
                         Layout.fillWidth: true; Layout.fillHeight: true; clip: true
@@ -1885,7 +1964,7 @@ ApplicationWindow {
                             Text { text: "(" + modelData.reason + ")"; color: "#fca5a5"; font.pixelSize: 10 }
                         }
                     }
-                    Text { text: "📌 时间线上相关镜头已自动标红失效 [Media Offline]，避免损坏成片。"; color: "#cbd5e1"; font.pixelSize: 10 }
+                    Text { text: "时间线上相关镜头已自动标红失效 [Media Offline]，避免损坏成片。"; color: "#cbd5e1"; font.pixelSize: 10 }
                 }
             }
 
@@ -1897,7 +1976,7 @@ ApplicationWindow {
                 RowLayout {
                     anchors.fill: parent; anchors.margins: 10; spacing: 8
                     Text {
-                        text: "💡 相机在断开期间新录制了 " + root.lastDiffReport.new_count + " 个视频（已为你保留，未自动强行打乱当前时间线）"
+                        text: "相机在断开期间新录制了 " + root.lastDiffReport.new_count + " 个视频（已为你保留，未自动强行打乱当前时间线）"
                         color: "#6ee7b7"; font.pixelSize: 11
                     }
                 }
@@ -1910,7 +1989,7 @@ ApplicationWindow {
 
                 Button {
                     visible: root.lastDiffReport.missing && root.lastDiffReport.missing.length > 0
-                    text: "🗑️ 一键清除失效片段"
+                    text: "一键清除失效片段"
                     onClicked: root.purgeInvalidClips()
                     background: Rectangle { color: "#7f1d1d"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -1942,27 +2021,59 @@ ApplicationWindow {
     Dialog {
         id: exportModal
         anchors.centerIn: parent
-        width: Math.min(520, root.width - 32); height: 320
-        modal: true; title: "🚀 导出 4K 60fps 最终母带"
+        width: Math.min(540, root.width - 32); height: 420
+        modal: true; title: "导出 4K 60fps 最终母带"
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
 
         property real progress: 0.0
         property string statusText: "准备压制..."
 
         ColumnLayout {
-            anchors.fill: parent; spacing: 12
+            anchors.fill: parent; spacing: 10
             Text {
-                text: "✨ 规范：HEVC Main 10 (p010le) · BT.2020 · ARIB STD-B67 (HLG) · 65Mbps\n100% 符合 YouTube / B站 原生 4K60 HDR 审核标准！"
-                color: "#38bdf8"; font.pixelSize: 12; lineHeight: 1.3
+                text: "规范：HEVC Main 10 (p010le) · BT.2020 · ARIB STD-B67 (HLG) · 65Mbps\n100% 符合 YouTube / B站 原生 4K60 HDR 审核标准"
+                color: "#38bdf8"; font.pixelSize: 11; lineHeight: 1.3
             }
+
+            Text { text: "导出画幅母带标准："; color: "#cbd5e1"; font.pixelSize: 12 }
+            ComboBox {
+                id: exportCanvasCombo; Layout.fillWidth: true
+                model: [
+                    "3840×2160 16:9 横屏母带 (YouTube / B站 / 电脑大屏)",
+                    "2160×3840 9:16 竖屏大片 (抖音 / 视频号 / 小红书 / 移动端)"
+                ]
+                currentIndex: root.masterCanvas === "vertical" ? 1 : 0
+                onActivated: {
+                    root.masterCanvas = currentIndex === 1 ? "vertical" : "horizontal"
+                }
+            }
+
+            Text { text: "色彩与编码规格："; color: "#cbd5e1"; font.pixelSize: 12 }
+            ComboBox {
+                id: exportColorCombo; Layout.fillWidth: true
+                model: [
+                    "10-Bit HDR (Apple Silicon ProRes / BT.2020 HLG / 65Mbps 原色母带)",
+                    "8-Bit SDR (Rec.709 / 35Mbps 标准网络快速分享)"
+                ]
+                currentIndex: root.targetColor === "8bit" ? 1 : 0
+                onActivated: {
+                    root.targetColor = currentIndex === 1 ? "8bit" : "10bit"
+                }
+            }
+
             ProgressBar { Layout.fillWidth: true; value: exportModal.progress / 100.0 }
-            Text { text: exportModal.statusText; color: "#f1f5f9"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideMiddle }
+            Text { text: exportModal.statusText; color: "#f1f5f9"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
             RowLayout {
                 Layout.fillWidth: true
-                Button { text: "中止导出"; onClicked: bridge.cancelCurrentJob(); background: Rectangle { color: "#ef4444"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                Button {
+                    text: "中止导出"
+                    onClicked: bridge.cancelCurrentJob()
+                    background: Rectangle { color: "#ef4444"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
                 Item { Layout.fillWidth: true }
                 Button {
-                    text: "📄 导出 SRT 字幕"
+                    text: "导出 SRT 字幕"
                     onClicked: { bridge.generateSrt(root.timelineClips, "") }
                     background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#38bdf8" }
                     contentItem: Text { text: parent.text; color: "#38bdf8"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
