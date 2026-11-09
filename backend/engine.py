@@ -10,9 +10,12 @@ import threading
 from PySide6.QtCore import QObject, Signal, Slot, Property, QThread
 
 DEFAULT_CARD_DIR = "/Volumes/OsmoNano/DCIM/DJI_001"
-THUMB_CACHE_DIR = os.path.expanduser("~/.cache/dji_editor_thumbs")
+THUMB_CACHE_DIR = os.path.expanduser("~/.cache/sui_jian_thumbs")
+CACHE_DIR = os.path.expanduser("~/.cache/sui_jian")
+CHECKPOINT_FILE = os.path.join(CACHE_DIR, "ai_screening_checkpoint.json")
 ANALYZER_BIN = os.path.expanduser("~/Desktop/.dji_vision_analyzer")
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
+os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 def probe_file(filepath):
@@ -196,10 +199,153 @@ class MediaImportWorker(QThread):
             self.error.emit(str(e))
 
 
+def load_ai_checkpoint(selected_paths):
+    if os.path.exists(CHECKPOINT_FILE):
+        try:
+            with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if data.get("selected_paths") == selected_paths:
+                    return data.get("completed_idx", 0), data.get("tasks", [])
+        except Exception:
+            pass
+    return 0, []
+
+def save_ai_checkpoint(selected_paths, completed_idx, tasks):
+    try:
+        with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "selected_paths": selected_paths,
+                "completed_idx": completed_idx,
+                "tasks": tasks,
+                "time": time.time()
+            }, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def clear_ai_checkpoint():
+    try:
+        if os.path.exists(CHECKPOINT_FILE):
+            os.remove(CHECKPOINT_FILE)
+    except Exception:
+        pass
+
+
+class DeviceHealthManager(QThread):
+    deviceDisconnected = Signal(str)
+    deviceReconnected = Signal(str, dict)
+
+    def __init__(self, bridge):
+        super().__init__()
+        self.bridge = bridge
+        self.active_root = ""
+        self.known_fingerprints = {}
+        self.is_online = True
+        self._running = True
+
+    def set_monitored_root(self, root_path, media_list):
+        self.active_root = root_path
+        self.known_fingerprints = {}
+        for m in media_list:
+            p = m.get("path")
+            if p and os.path.exists(p):
+                try:
+                    self.known_fingerprints[p] = {
+                        "size": os.path.getsize(p),
+                        "mtime": os.path.getmtime(p),
+                        "filename": m.get("filename", os.path.basename(p))
+                    }
+                except Exception:
+                    pass
+        self.is_online = os.path.exists(root_path) if root_path else True
+
+    def stop(self):
+        self._running = False
+
+    def run(self):
+        while self._running:
+            try:
+                if self.active_root:
+                    now_online = os.path.exists(self.active_root)
+                    if self.is_online and not now_online:
+                        # 设备意外断开 / 误拔
+                        self.is_online = False
+                        dev_name = os.path.basename(self.active_root) or self.active_root
+                        self.deviceDisconnected.emit(dev_name)
+                        # 保护性自动暂停初筛并存盘
+                        if self.bridge._ai_worker and self.bridge._ai_worker.isRunning():
+                            self.bridge.pauseAiScreening("存储卡或设备意外拔出")
+                    elif not self.is_online and now_online:
+                        # 设备重新连接
+                        self.is_online = True
+                        dev_name = os.path.basename(self.active_root) or self.active_root
+                        diff = self.reconcile_assets()
+                        self.deviceReconnected.emit(dev_name, diff)
+            except Exception as e:
+                pass
+            time.sleep(1.5)
+
+    def reconcile_assets(self):
+        missing = []
+        modified = []
+        valid_exts = {'.mp4', '.mov', '.mkv', '.m4v'}
+
+        for p, fp in list(self.known_fingerprints.items()):
+            if not os.path.exists(p):
+                # 删 (丢失)
+                missing.append({
+                    "path": p,
+                    "filename": fp["filename"],
+                    "reason": "源视频已在设备中被移除"
+                })
+            else:
+                try:
+                    cur_sz = os.path.getsize(p)
+                    cur_mt = os.path.getmtime(p)
+                    # 改 (等同于删)
+                    if cur_sz != fp["size"] or abs(cur_mt - fp["mtime"]) > 1.5:
+                        modified.append({
+                            "path": p,
+                            "filename": fp["filename"],
+                            "reason": "源视频已被重新录制覆盖（等同于删除）"
+                        })
+                        missing.append({
+                            "path": p,
+                            "filename": fp["filename"],
+                            "reason": "源视频已被重新录制覆盖（原剪辑失效）"
+                        })
+                except Exception:
+                    pass
+
+        # 扫描是否有新拍摄的文件 (不自动加入现有工程)
+        new_files = []
+        try:
+            for root, _, files in os.walk(self.active_root):
+                for f in files:
+                    ext = os.path.splitext(f)[1].lower()
+                    if ext in valid_exts and not f.startswith('.'):
+                        full_p = os.path.join(root, f)
+                        if full_p not in self.known_fingerprints:
+                            new_files.append(full_p)
+                if root != self.active_root and not any(k in root for k in ('DCIM', '100MEDIA', 'DJI')):
+                    break
+        except Exception:
+            pass
+
+        return {
+            "device": os.path.basename(self.active_root) or self.active_root,
+            "missing": missing,
+            "modified": modified,
+            "new_count": len(new_files),
+            "new_files": new_files[:5]
+        }
+
+
 class AiScreeningWorker(QThread):
     progress = Signal(float, str)
     finished = Signal(list)
     cancelled = Signal()
+    paused = Signal(int, int, str) # completed, total, reason
+    resumed = Signal()
 
     def __init__(self, media_pool, selected_paths, ai_mode, max_dur, master_canvas, target_color):
         super().__init__()
@@ -210,21 +356,52 @@ class AiScreeningWorker(QThread):
         self.master_canvas = master_canvas
         self.target_color = target_color
         self._is_cancelled = False
+        self._is_paused = False
+        self._pause_reason = ""
+        self._current_idx = 0
+        self._tasks = []
 
     def cancel(self):
         self._is_cancelled = True
 
+    def pause(self, reason="挂起暂停"):
+        self._is_paused = True
+        self._pause_reason = reason
+        save_ai_checkpoint(self.selected_paths, self._current_idx, self._tasks)
+        self.paused.emit(self._current_idx, len(self.selected_paths), reason)
+
+    def resume(self):
+        self._is_paused = False
+        self.resumed.emit()
+
     def run(self):
-        tasks = []
         total = len(self.selected_paths)
         if total == 0:
             self.finished.emit([])
             return
 
-        for idx, path in enumerate(self.selected_paths):
+        # 检查是否具备历史断点检查点
+        start_idx, restored_tasks = load_ai_checkpoint(self.selected_paths)
+        if start_idx > 0 and len(restored_tasks) > 0:
+            self._tasks = restored_tasks
+            self.progress.emit((start_idx / total) * 100.0, f"发现已留存的初筛检查点，直接从第 [{start_idx+1}/{total}] 个视频续接！")
+        else:
+            self._tasks = []
+            start_idx = 0
+
+        for idx in range(start_idx, total):
+            self._current_idx = idx
+
+            # 暂停与中断检测
+            while self._is_paused and not self._is_cancelled:
+                time.sleep(0.3)
+
             if self._is_cancelled:
+                save_ai_checkpoint(self.selected_paths, idx, self._tasks)
                 self.cancelled.emit()
                 return
+
+            path = self.selected_paths[idx]
             meta = self.media_pool.get(path)
             if not meta:
                 continue
@@ -266,9 +443,8 @@ class AiScreeningWorker(QThread):
                 sample_step = max(8.0, dur / 6.0)
                 sp_times = [t for t in range(2, int(max(3, dur - 2)), int(sample_step))]
                 for sp in sp_times:
-                    if self._is_cancelled:
-                        self.cancelled.emit()
-                        return
+                    if self._is_cancelled or self._is_paused:
+                        break
                     tmp_j = f"/tmp/dji_plan_samp_{os.getpid()}_{sp}.jpg"
                     cmd_j = ['ffmpeg', '-y', '-ss', str(sp), '-i', path, '-vframes', '1', '-vf', 'scale=480:-1', '-q:v', '5', tmp_j]
                     subprocess.run(cmd_j, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -302,7 +478,7 @@ class AiScreeningWorker(QThread):
                 clip_dur = e_t - s_t
                 if clip_dur < 1.0:
                     continue
-                tasks.append({
+                self._tasks.append({
                     "src": path,
                     "filename": meta["filename"],
                     "start": round(s_t, 2),
@@ -315,8 +491,12 @@ class AiScreeningWorker(QThread):
                     "transpose": meta.get("transpose")
                 })
 
-        self.progress.emit(100.0, f"完成筛选，共生成 {len(tasks)} 段精选镜头")
-        self.finished.emit(tasks)
+            # 每处理完一个视频，立即存盘检查点，确保误拔或断开时零损失
+            save_ai_checkpoint(self.selected_paths, idx + 1, self._tasks)
+
+        clear_ai_checkpoint()
+        self.progress.emit(100.0, f"完成筛选，共生成 {len(self._tasks)} 段精选镜头")
+        self.finished.emit(self._tasks)
 
 
 class ExportWorker(QThread):
@@ -462,6 +642,11 @@ class EditorBridge(QObject):
     statusMessage = Signal(str)
     aiProgress = Signal(float, str)
     aiFinished = Signal(list)
+    aiPaused = Signal(int, int, str)
+    aiResumed = Signal()
+    deviceDisconnected = Signal(str)
+    deviceReconnected = Signal(str, dict)
+    checkpointDetected = Signal(int, int)
     exportProgress = Signal(float, str)
     exportFinished = Signal(str)
     exportFailed = Signal(str)
@@ -472,8 +657,23 @@ class EditorBridge(QObject):
         self._scan_worker = None
         self._ai_worker = None
         self._export_worker = None
+        self._health_manager = DeviceHealthManager(self)
+        self._health_manager.deviceDisconnected.connect(self._on_device_disconnected)
+        self._health_manager.deviceReconnected.connect(self._on_device_reconnected)
+        self._health_manager.start()
+
+    def _on_device_disconnected(self, dev_name):
+        self.deviceDisconnected.emit(dev_name)
+        self.statusMessage.emit(f"⚠️ 设备 [{dev_name}] 已断开（拔出/录像中）· 任务已安全挂起")
+
+    def _on_device_reconnected(self, dev_name, diff):
+        self.deviceReconnected.emit(dev_name, diff)
+        self.statusMessage.emit(f"✅ 设备 [{dev_name}] 已重新连接！")
 
     def close(self):
+        if hasattr(self, "_health_manager") and self._health_manager:
+            self._health_manager.stop()
+            self._health_manager.wait()
         if self._scan_worker and self._scan_worker.isRunning():
             self._scan_worker.wait()
         if self._ai_worker and self._ai_worker.isRunning():
@@ -511,6 +711,12 @@ class EditorBridge(QObject):
     def _on_import_finished(self, dates, media_list, source_label):
         self.mediaLoaded.emit(dates, media_list, source_label)
         self.loadRecentDirs()
+        root_dir = source_label if (source_label and os.path.exists(source_label)) else ""
+        if not root_dir and media_list:
+            first_p = media_list[0].get("path", "")
+            if first_p:
+                root_dir = os.path.dirname(first_p)
+        self._health_manager.set_monitored_root(root_dir, media_list)
         self.statusMessage.emit(f"已成功加载 {len(media_list)} 个素材 ({source_label})")
 
     @Slot()
@@ -531,10 +737,41 @@ class EditorBridge(QObject):
     def startAiScreening(self, media_pool, selected_paths, ai_mode, max_dur, master_canvas, target_color):
         if self._ai_worker and self._ai_worker.isRunning():
             self._ai_worker.cancel()
+            self._ai_worker.wait()
         self._ai_worker = AiScreeningWorker(media_pool, selected_paths, ai_mode, max_dur, master_canvas, target_color)
         self._ai_worker.progress.connect(self.aiProgress.emit)
         self._ai_worker.finished.connect(self.aiFinished.emit)
+        self._ai_worker.paused.connect(self.aiPaused.emit)
+        self._ai_worker.resumed.connect(self.aiResumed.emit)
         self._ai_worker.start()
+
+    @Slot()
+    def pauseAiScreening(self, reason="用户主动暂停"):
+        if self._ai_worker and self._ai_worker.isRunning():
+            self._ai_worker.pause(reason)
+            self.statusMessage.emit(f"⏸️ AI 任务已暂停 ({reason}) · 断点已安全存盘")
+
+    @Slot()
+    def resumeAiScreening(self):
+        if self._ai_worker and self._ai_worker.isRunning():
+            self._ai_worker.resume()
+            self.statusMessage.emit("▶️ AI 任务已从断点恢复执行")
+
+    @Slot()
+    def safeEjectDevice(self):
+        """用户主动请求安全拔出设备去录像"""
+        if self._ai_worker and self._ai_worker.isRunning():
+            self._ai_worker.pause("准备拔出设备录像")
+        self.statusMessage.emit("✅ 检查点已留存！现在可安全拔出相机去录像，插回后可随时续接。")
+
+    @Slot(result=bool)
+    def hasCheckpoint(self):
+        return os.path.exists(CHECKPOINT_FILE)
+
+    @Slot()
+    def clearCheckpoint(self):
+        clear_ai_checkpoint()
+        self.statusMessage.emit("已清除历史初筛检查点")
 
     @Slot(list, str, str)
     def startExport(self, clips, master_canvas, target_color):

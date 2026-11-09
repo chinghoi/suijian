@@ -46,13 +46,13 @@ jobs:
       - name: Package macOS App & DMG
         if: matrix.build_type == 'macos'
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "DJI智能剪辑大师" \
+          pyinstaller --noconfirm --onedir --windowed --name "随剪" \
             --icon "assets/icon.icns" \
             --add-data "qml:qml" \
             --add-data "backend:backend" \
             --add-data "assets:assets" \
             main.py
-          hdiutil create -volname "DJI智能剪辑大师" -srcfolder dist/DJI智能剪辑大师.app -ov -format UDZO DJI-Editor-macOS.dmg
+          hdiutil create -volname "随剪" -srcfolder dist/随剪.app -ov -format UDZO SuiJian-macOS.dmg
 
       - name: Package Windows EXE
         if: matrix.build_type == 'windows'

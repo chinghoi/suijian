@@ -25,8 +25,8 @@ def main():
     os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
 
     app = QGuiApplication(sys.argv)
-    app.setApplicationName("DJI 智能剪辑大师 Pro")
-    app.setOrganizationName("DJI_Editor")
+    app.setApplicationName("随剪")
+    app.setOrganizationName("SuiJian")
 
     # 2. 全局深色调色板注入，确保窗口框架与原生控件 100% 统一为深色系
     dark_palette = QPalette()

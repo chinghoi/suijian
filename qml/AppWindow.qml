@@ -11,7 +11,7 @@ ApplicationWindow {
     height: 900
     minimumWidth: 420
     minimumHeight: 640
-    title: "DJI 智能剪辑大师 Pro"
+    title: "随剪"
     color: "#0c0d11"
 
     // 响应式布局（根据窗口宽度与横竖屏自动无缝切换，完全纯净无人工按钮）
@@ -37,6 +37,103 @@ ApplicationWindow {
 
     property string masterCanvas: "horizontal"
     property string targetColor: "10bit"
+
+    // 撤销 / 重做系统 (Undo / Redo System，全面支持触控大按钮与快捷键)
+    property var undoStack: []
+    property var redoStack: []
+    readonly property bool canUndo: undoStack.length > 0
+    readonly property bool canRedo: redoStack.length > 0
+
+    // 可推出设备断开与热插拔审计状态
+    property bool isDeviceDisconnected: false
+    property string disconnectedDeviceName: ""
+    property var missingPathsMap: ({})
+    property var lastDiffReport: ({ missing: [], modified: [], new_count: 0 })
+
+    function pushUndoState(actionName) {
+        var snapshot = {
+            action: actionName || "剪辑变动",
+            clips: JSON.parse(JSON.stringify(root.timelineClips)),
+            activeClipIndex: root.activeClipIndex
+        }
+        var newStack = undoStack.slice(Math.max(0, undoStack.length - 49))
+        newStack.push(snapshot)
+        undoStack = newStack
+        redoStack = []
+    }
+
+    function undo() {
+        if (!canUndo) {
+            statusBanner.show("已到最早历史记录，无法撤销")
+            return
+        }
+        var currentSnapshot = {
+            action: "当前状态",
+            clips: JSON.parse(JSON.stringify(root.timelineClips)),
+            activeClipIndex: root.activeClipIndex
+        }
+        var newRedo = redoStack.slice()
+        newRedo.push(currentSnapshot)
+        redoStack = newRedo
+
+        var prevSnapshot = undoStack[undoStack.length - 1]
+        var newUndo = undoStack.slice(0, undoStack.length - 1)
+        undoStack = newUndo
+
+        root.timelineClips = prevSnapshot.clips
+        root.activeClipIndex = Math.min(prevSnapshot.activeClipIndex, root.timelineClips.length - 1)
+        if (root.activeClipIndex >= 0) {
+            root.loadActiveClip(root.activeClipIndex, false)
+        }
+        statusBanner.show("↩ 已撤销: " + prevSnapshot.action)
+    }
+
+    function redo() {
+        if (!canRedo) {
+            statusBanner.show("已到最新状态，无法重做")
+            return
+        }
+        var nextSnapshot = redoStack[redoStack.length - 1]
+        var newRedo = redoStack.slice(0, redoStack.length - 1)
+        redoStack = newRedo
+
+        var currentSnapshot = {
+            action: "撤销前状态",
+            clips: JSON.parse(JSON.stringify(root.timelineClips)),
+            activeClipIndex: root.activeClipIndex
+        }
+        var newUndo = undoStack.slice()
+        newUndo.push(currentSnapshot)
+        undoStack = newUndo
+
+        root.timelineClips = nextSnapshot.clips
+        root.activeClipIndex = Math.min(nextSnapshot.activeClipIndex, root.timelineClips.length - 1)
+        if (root.activeClipIndex >= 0) {
+            root.loadActiveClip(root.activeClipIndex, false)
+        }
+        statusBanner.show("↪ 已重做: " + nextSnapshot.action)
+    }
+
+    function purgeInvalidClips() {
+        pushUndoState("一键清理失效镜头")
+        var remaining = []
+        for (var i = 0; i < root.timelineClips.length; i++) {
+            var c = root.timelineClips[i]
+            if (!root.missingPathsMap[c.src]) {
+                remaining.push(c)
+            }
+        }
+        var removedCount = root.timelineClips.length - remaining.length
+        root.timelineClips = remaining
+        root.activeClipIndex = Math.min(root.activeClipIndex, root.timelineClips.length - 1)
+        if (root.activeClipIndex >= 0) {
+            root.loadActiveClip(root.activeClipIndex, false)
+        } else {
+            player.stop()
+        }
+        reconciliationDialog.close()
+        statusBanner.show("已清理 " + removedCount + " 个源素材丢失的失效片段")
+    }
 
     // 快捷计算属性
     property real totalMovieDuration: {
@@ -125,6 +222,7 @@ ApplicationWindow {
 
     function stepActiveIn(delta) {
         if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
+        pushUndoState("调整镜头入点")
         var clip = Object.assign({}, timelineClips[activeClipIndex])
         var newStart = Math.max(0.0, clip.start + delta)
         if (newStart < clip.end - 0.5) {
@@ -140,6 +238,7 @@ ApplicationWindow {
 
     function stepActiveOut(delta) {
         if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
+        pushUndoState("调整镜头出点")
         var clip = Object.assign({}, timelineClips[activeClipIndex])
         var newEnd = Math.max(clip.start + 0.5, clip.end + delta)
         clip.end = Number(newEnd.toFixed(2))
@@ -159,6 +258,7 @@ ApplicationWindow {
             statusBanner.show("分割点距离片段边缘太近，无法分割")
             return
         }
+        pushUndoState("分割镜头")
         var c1 = Object.assign({}, clip, {
             end: Number(curPos.toFixed(2)),
             dur: Number((curPos - clip.start).toFixed(2)),
@@ -177,6 +277,7 @@ ApplicationWindow {
 
     function duplicateCurrentClip() {
         if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
+        pushUndoState("复制镜头")
         var clip = Object.assign({}, timelineClips[activeClipIndex])
         var list = timelineClips.slice()
         list.splice(activeClipIndex + 1, 0, clip)
@@ -187,6 +288,7 @@ ApplicationWindow {
 
     function deleteCurrentClip() {
         if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
+        pushUndoState("删除镜头")
         var list = timelineClips.slice()
         list.splice(activeClipIndex, 1)
         timelineClips = list
@@ -202,6 +304,7 @@ ApplicationWindow {
     function moveCurrentClip(delta) {
         var target = activeClipIndex + delta
         if (target < 0 || target >= timelineClips.length) return
+        pushUndoState("移动镜头顺序")
         var list = timelineClips.slice()
         var item = list.splice(activeClipIndex, 1)[0]
         list.splice(target, 0, item)
@@ -290,12 +393,46 @@ ApplicationWindow {
 
         function onAiFinished(tasks) {
             aiModal.close()
+            root.pushUndoState("应用 AI 智能初筛结果")
             root.timelineClips = tasks
             if (tasks.length > 0) {
                 root.loadActiveClip(0, false)
                 statusBanner.show("✨ AI 自动筛选完成，共剪辑出 " + tasks.length + " 段精彩镜头！")
             } else {
                 statusBanner.show("未筛选到片段，请检查筛选参数")
+            }
+        }
+
+        function onAiPaused(completed, total, reason) {
+            aiModal.statusText = "⏸️ 任务已安全暂停 (" + reason + ") · 进度已留存 (" + completed + "/" + total + ")"
+            statusBanner.show("⏸️ 初筛任务已安全暂存检查点，插回相机即可继续")
+        }
+
+        function onAiResumed() {
+            statusBanner.show("▶️ 已从断点继续执行 AI 任务")
+        }
+
+        function onDeviceDisconnected(devName) {
+            root.isDeviceDisconnected = true
+            root.disconnectedDeviceName = devName
+            statusBanner.show("⚠️ 存储设备 [" + devName + "] 已断开（拔出录像中）· 任务已安全挂起")
+            if (player.playbackState === MediaPlayer.PlayingState) player.pause()
+        }
+
+        function onDeviceReconnected(devName, diff) {
+            root.isDeviceDisconnected = false
+            root.lastDiffReport = diff
+            if (diff.missing && diff.missing.length > 0) {
+                var missingMap = {}
+                for (var i = 0; i < diff.missing.length; i++) {
+                    missingMap[diff.missing[i].path] = true
+                }
+                root.missingPathsMap = missingMap
+                reconciliationDialog.open()
+            } else if (diff.new_count > 0) {
+                statusBanner.show("💡 设备已重新连接！相机内发现 " + diff.new_count + " 个新视频（未打乱当前工程）")
+            } else {
+                statusBanner.show("✅ 设备已重新连接，全部 " + root.mediaPool.length + " 个素材完好在线！")
             }
         }
 
@@ -333,6 +470,9 @@ ApplicationWindow {
     Shortcut { sequence: "Right"; onActivated: player.position = player.position + 1000 }
     Shortcut { sequence: "B"; onActivated: root.splitCurrentClip() }
     Shortcut { sequence: "Delete"; onActivated: root.deleteCurrentClip() }
+    Shortcut { sequence: "Ctrl+Z"; onActivated: root.undo() }
+    Shortcut { sequence: "Ctrl+Shift+Z"; onActivated: root.redo() }
+    Shortcut { sequence: "Ctrl+Y"; onActivated: root.redo() }
 
     // ==========================================
     // 全局拖拽支持 (支持直接从 Finder / 资源管理器拖入)
@@ -402,18 +542,11 @@ ApplicationWindow {
                 anchors.rightMargin: root.isMobileMode ? 10 : 16
                 spacing: root.isMobileMode ? 8 : 10
 
-                Image {
-                    source: "../assets/icon.png"
-                    Layout.preferredWidth: 26
-                    Layout.preferredHeight: 26
-                    fillMode: Image.PreserveAspectFit
-                }
-
                 Text {
-                    text: root.isMobileMode ? "DJI 剪辑 Pro" : "DJI 智能剪辑大师 Pro"
+                    text: root.isMobileMode ? "随剪" : "🎬 随剪"
                     color: "#ffffff"
                     font.bold: true
-                    font.pixelSize: root.isMobileMode ? 14 : 15
+                    font.pixelSize: root.isMobileMode ? 14 : 16
                 }
 
                 Item { Layout.fillWidth: true }
@@ -464,6 +597,37 @@ ApplicationWindow {
                         }
                     }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+        }
+
+        // 设备断开 / 误拔防护横幅 (自动存盘并在重连后引导恢复)
+        Rectangle {
+            visible: root.isDeviceDisconnected
+            Layout.fillWidth: true
+            Layout.preferredHeight: 38
+            color: "#450a0a"
+            border.color: "#ef4444"
+            border.width: 1
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                spacing: 10
+
+                Text {
+                    text: "⚠️ 存储设备 [" + (root.disconnectedDeviceName || "相机/SD卡") + "] 已断开（拔出/录像中）· 时间线与初筛断点已安全保护留存，插回即可一键恢复"
+                    color: "#fecaca"
+                    font.bold: true
+                    font.pixelSize: 12
+                }
+                Item { Layout.fillWidth: true }
+                Button {
+                    text: "🔄 检测设备重连"
+                    onClicked: bridge.detectDji()
+                    background: Rectangle { color: "#991b1b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
             }
         }
@@ -607,14 +771,27 @@ ApplicationWindow {
                             model: root.timelineClips
 
                             delegate: Rectangle {
+                                readonly property bool isInvalidClip: root.missingPathsMap[modelData.src] === true
                                 width: Math.max(85, Math.min(200, Number(modelData.dur || 5) * 8))
                                 height: 100
                                 radius: 6; clip: true
-                                color: root.activeClipIndex === index ? "#1e293b" : "#141620"
-                                border.color: root.activeClipIndex === index ? "#38bdf8" : "#2d3345"
-                                border.width: root.activeClipIndex === index ? 2 : 1
+                                color: isInvalidClip ? "#450a0a" : (root.activeClipIndex === index ? "#1e293b" : "#141620")
+                                border.color: isInvalidClip ? "#ef4444" : (root.activeClipIndex === index ? "#38bdf8" : "#2d3345")
+                                border.width: (isInvalidClip || root.activeClipIndex === index) ? 2 : 1
 
-                                Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop; opacity: 0.65 }
+                                Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop; opacity: isInvalidClip ? 0.3 : 0.65 }
+
+                                Rectangle {
+                                    visible: isInvalidClip
+                                    anchors.fill: parent
+                                    color: "#99450a0a"
+                                    ColumnLayout {
+                                        anchors.centerIn: parent
+                                        spacing: 2
+                                        Text { text: "⚠️"; font.pixelSize: 16; Layout.alignment: Qt.AlignHCenter }
+                                        Text { text: "原素材已失效"; color: "#fca5a5"; font.bold: true; font.pixelSize: 9; Layout.alignment: Qt.AlignHCenter }
+                                    }
+                                }
 
                                 Rectangle {
                                     anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -632,12 +809,26 @@ ApplicationWindow {
                         }
                     }
 
-                    // 剪辑快捷操作栏
+                    // 剪辑快捷操作栏 (大拇指触控区)
                     RowLayout {
                         Layout.fillWidth: true; Layout.preferredHeight: 36
                         Layout.leftMargin: 8; Layout.rightMargin: 8
                         spacing: 6
 
+                        Button {
+                            text: "↩ 撤销"; Layout.fillWidth: true; Layout.preferredHeight: 36
+                            enabled: root.canUndo; opacity: root.canUndo ? 1.0 : 0.35
+                            onClicked: root.undo()
+                            background: Rectangle { color: root.canUndo ? "#1e293b" : "#12131a"; radius: 6; border.color: root.canUndo ? "#475569" : "#1f2430" }
+                            contentItem: Text { text: parent.text; color: root.canUndo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            text: "↪ 重做"; Layout.fillWidth: true; Layout.preferredHeight: 36
+                            enabled: root.canRedo; opacity: root.canRedo ? 1.0 : 0.35
+                            onClicked: root.redo()
+                            background: Rectangle { color: root.canRedo ? "#1e293b" : "#12131a"; radius: 6; border.color: root.canRedo ? "#475569" : "#1f2430" }
+                            contentItem: Text { text: parent.text; color: root.canRedo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        }
                         Button {
                             text: "✂️ 分割"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.splitCurrentClip()
@@ -1363,12 +1554,26 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.preferredHeight: 28
                     anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
 
+                    Button {
+                        text: "↩ 撤销 (Z)"
+                        enabled: root.canUndo; opacity: root.canUndo ? 1.0 : 0.35
+                        onClicked: root.undo()
+                        background: Rectangle { color: root.canUndo ? "#222738" : "#141620"; radius: 4; border.color: root.canUndo ? "#475569" : "#1e2230" }
+                        contentItem: Text { text: parent.text; color: root.canUndo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                    Button {
+                        text: "↪ 重做 (⇧Z)"
+                        enabled: root.canRedo; opacity: root.canRedo ? 1.0 : 0.35
+                        onClicked: root.redo()
+                        background: Rectangle { color: root.canRedo ? "#222738" : "#141620"; radius: 4; border.color: root.canRedo ? "#475569" : "#1e2230" }
+                        contentItem: Text { text: parent.text; color: root.canRedo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
                     Button { text: "✂️ 分割 (B)"; onClicked: root.splitCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "🗑️ 删除 (Del)"; onClicked: root.deleteCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "◀ 前移"; onClicked: root.moveCurrentClip(-1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "后移 ▶"; onClicked: root.moveCurrentClip(1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Item { Layout.fillWidth: true }
-                    Text { text: "💡 提示：支持直接拖拽视频文件或文件夹到窗口任何位置导入"; color: "#64748b"; font.pixelSize: 11 }
+                    Text { text: "💡 提示：双击/拖拽素材导入时间线 · 支持双指触控撤销"; color: "#64748b"; font.pixelSize: 11 }
                 }
 
                 ListView {
@@ -1379,13 +1584,26 @@ ApplicationWindow {
                     anchors.leftMargin: 12; anchors.rightMargin: 12
 
                     delegate: Rectangle {
+                        readonly property bool isInvalidClip: root.missingPathsMap[modelData.src] === true
                         width: Math.max(90, Math.min(260, Number(modelData.dur || 5) * 8))
                         height: 110; radius: 6; clip: true
-                        color: root.activeClipIndex === index ? "#1e293b" : "#141620"
-                        border.color: root.activeClipIndex === index ? "#38bdf8" : "#2d3345"
-                        border.width: root.activeClipIndex === index ? 2 : 1
+                        color: isInvalidClip ? "#450a0a" : (root.activeClipIndex === index ? "#1e293b" : "#141620")
+                        border.color: isInvalidClip ? "#ef4444" : (root.activeClipIndex === index ? "#38bdf8" : "#2d3345")
+                        border.width: (isInvalidClip || root.activeClipIndex === index) ? 2 : 1
 
-                        Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop; opacity: 0.65 }
+                        Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop; opacity: isInvalidClip ? 0.3 : 0.65 }
+
+                        Rectangle {
+                            visible: isInvalidClip
+                            anchors.fill: parent
+                            color: "#99450a0a"
+                            ColumnLayout {
+                                anchors.centerIn: parent
+                                spacing: 2
+                                Text { text: "⚠️"; font.pixelSize: 18; Layout.alignment: Qt.AlignHCenter }
+                                Text { text: "原素材已失效/被改动"; color: "#fca5a5"; font.bold: true; font.pixelSize: 10; Layout.alignment: Qt.AlignHCenter }
+                            }
+                        }
 
                         Rectangle {
                             anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -1460,10 +1678,33 @@ ApplicationWindow {
             Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
             RowLayout {
                 Layout.fillWidth: true
-                Button { text: "取消任务"; onClicked: bridge.cancelCurrentJob(); background: Rectangle { color: "#334155"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                Item { Layout.fillWidth: true }
+                spacing: 8
+
                 Button {
-                    text: "开始 AI 自动初筛"
+                    text: "取消"
+                    onClicked: bridge.cancelCurrentJob()
+                    background: Rectangle { color: "#334155"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Button {
+                    text: "⏸️ 暂停"
+                    onClicked: bridge.pauseAiScreening("用户主动暂停")
+                    background: Rectangle { color: "#475569"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Button {
+                    text: "💾 安全拔卡去录像"
+                    onClicked: bridge.safeEjectDevice()
+                    background: Rectangle { color: "#065f46"; radius: 4; border.color: "#10b981" }
+                    contentItem: Text { text: parent.text; color: "#6ee7b7"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: "开始 / 续接初筛"
                     onClicked: {
                         var mode = aiModeCombo.currentIndex === 0 ? "1" : (aiModeCombo.currentIndex === 1 ? "2" : "3")
                         var c = canvasCombo.currentIndex === 0 ? "horizontal" : "vertical"
@@ -1471,6 +1712,99 @@ ApplicationWindow {
                     }
                     background: Rectangle { color: "#4f46e5"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+        }
+    }
+
+    // 设备重连资产比对与失效处理弹窗
+    Dialog {
+        id: reconciliationDialog
+        anchors.centerIn: parent
+        width: Math.min(540, root.width - 32)
+        height: Math.min(460, root.height - 40)
+        modal: true
+        title: "💾 相机存储设备已重连 · 媒体资产审计报告"
+        background: Rectangle { color: "#161822"; border.color: "#3b82f6"; radius: 10 }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+
+            Text {
+                text: "设备 [" + (root.lastDiffReport.device || "相机存储卡") + "] 已重新接入！"
+                color: "#f8fafc"; font.bold: true; font.pixelSize: 14
+            }
+
+            // 1. 删与改报警区域 (有失效文件时警示)
+            Rectangle {
+                visible: root.lastDiffReport.missing && root.lastDiffReport.missing.length > 0
+                Layout.fillWidth: true; Layout.preferredHeight: 140
+                color: "#2a1215"; border.color: "#ef4444"; radius: 6
+
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 10; spacing: 6
+                    RowLayout {
+                        Text { text: "⚠️ 警告：检测到以下源素材已被移除或被覆写修改（等同移除）："; color: "#fca5a5"; font.bold: true; font.pixelSize: 11 }
+                    }
+                    ListView {
+                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                        model: root.lastDiffReport.missing || []
+                        spacing: 4
+                        delegate: RowLayout {
+                            spacing: 6
+                            Text { text: "• " + modelData.filename; color: "#f87171"; font.bold: true; font.pixelSize: 11 }
+                            Text { text: "(" + modelData.reason + ")"; color: "#fca5a5"; font.pixelSize: 10 }
+                        }
+                    }
+                    Text { text: "📌 时间线上相关镜头已自动标红失效 [Media Offline]，避免损坏成片。"; color: "#cbd5e1"; font.pixelSize: 10 }
+                }
+            }
+
+            // 2. 新增素材提示区域 (不自动打乱当前工程)
+            Rectangle {
+                visible: root.lastDiffReport.new_count > 0
+                Layout.fillWidth: true; Layout.preferredHeight: 46
+                color: "#0f231e"; border.color: "#10b981"; radius: 6
+                RowLayout {
+                    anchors.fill: parent; anchors.margins: 10; spacing: 8
+                    Text {
+                        text: "💡 相机在断开期间新录制了 " + root.lastDiffReport.new_count + " 个视频（已为你保留，未自动强行打乱当前时间线）"
+                        color: "#6ee7b7"; font.pixelSize: 11
+                    }
+                }
+            }
+
+            Item { Layout.fillHeight: true }
+
+            RowLayout {
+                Layout.fillWidth: true; spacing: 8
+
+                Button {
+                    visible: root.lastDiffReport.missing && root.lastDiffReport.missing.length > 0
+                    text: "🗑️ 一键清除失效片段"
+                    onClicked: root.purgeInvalidClips()
+                    background: Rectangle { color: "#7f1d1d"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Button {
+                    text: "保留占位稍后处理"
+                    onClicked: reconciliationDialog.close()
+                    background: Rectangle { color: "#334155"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: "确定并继续"
+                    onClicked: {
+                        reconciliationDialog.close()
+                        bridge.resumeAiScreening()
+                    }
+                    background: Rectangle { color: "#2563eb"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
             }
         }
