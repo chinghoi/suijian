@@ -48,7 +48,33 @@ ApplicationWindow {
     property var previewItem: null
 
     property string masterCanvas: "horizontal"
+    property string canvasChoice: "auto"
     property string targetColor: "10bit"
+
+    function getAutoMasterCanvas() {
+        var items = []
+        var paths = root.getSelectedPathsList()
+        if (paths.length > 0) {
+            for (var i = 0; i < root.mediaPool.length; i++) {
+                if (paths.indexOf(root.mediaPool[i].path) !== -1) {
+                    items.push(root.mediaPool[i])
+                }
+            }
+        }
+        if (items.length === 0 && root.timelineClips.length > 0) {
+            items = root.timelineClips
+        }
+        if (items.length === 0) {
+            items = root.mediaPool
+        }
+        var vertCount = 0
+        var horizCount = 0
+        for (var j = 0; j < items.length; j++) {
+            if (items[j].orient === "vertical") vertCount++
+            else horizCount++
+        }
+        return vertCount > horizCount ? "vertical" : "horizontal"
+    }
 
     // 撤销 / 重做系统 (Undo / Redo System，全面支持触控大按钮与快捷键)
     property var undoStack: []
@@ -2740,7 +2766,7 @@ ApplicationWindow {
         property string statusText: "准备就绪"
 
         onAboutToShow: {
-            aiCanvasCombo.currentIndex = root.masterCanvas === "vertical" ? 1 : 0
+            aiCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
         }
 
         ColumnLayout {
@@ -2757,17 +2783,29 @@ ApplicationWindow {
                 ]
             }
 
-            Text { text: "视频方向与成片画幅："; color: "#cbd5e1"; font.pixelSize: 12 }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: "视频方向与成片画幅："; color: "#cbd5e1"; font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+                Text {
+                    visible: aiCanvasCombo.currentIndex === 0
+                    text: "已自动识别: " + (root.getAutoMasterCanvas() === "vertical" ? "9:16 竖屏" : "16:9 横屏")
+                    color: "#38bdf8"; font.pixelSize: 11; font.bold: true
+                }
+            }
             ComboBox {
                 id: aiCanvasCombo
                 Layout.fillWidth: true
                 model: [
-                    "3840×2160 16:9 横屏母带 (YouTube / B站 / 电脑与电视大屏)",
-                    "2160×3840 9:16 竖屏大片 (抖音 / 视频号 / 小红书 / 移动端)"
+                    "自动决定 (按所选视频真实拍摄方向智能自适应 · 推荐)",
+                    "3840×2160 16:9 横屏母带 (强制横屏 · YouTube / B站 / 电脑与电视大屏)",
+                    "2160×3840 9:16 竖屏大片 (强制竖屏 · 抖音 / 视频号 / 小红书 / 移动端)"
                 ]
-                currentIndex: root.masterCanvas === "vertical" ? 1 : 0
+                currentIndex: root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
                 onActivated: {
-                    root.masterCanvas = currentIndex === 1 ? "vertical" : "horizontal"
+                    if (currentIndex === 0) root.canvasChoice = "auto"
+                    else if (currentIndex === 1) root.canvasChoice = "horizontal"
+                    else root.canvasChoice = "vertical"
                 }
             }
 
@@ -2969,7 +3007,14 @@ ApplicationWindow {
                             }
                         }
 
-                        var canvasMode = aiCanvasCombo.currentIndex === 1 ? "vertical" : "horizontal"
+                        var canvasMode = "horizontal"
+                        if (aiCanvasCombo.currentIndex === 0) {
+                            canvasMode = root.getAutoMasterCanvas()
+                        } else if (aiCanvasCombo.currentIndex === 1) {
+                            canvasMode = "horizontal"
+                        } else {
+                            canvasMode = "vertical"
+                        }
                         root.masterCanvas = canvasMode
 
                         bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
@@ -3187,6 +3232,10 @@ ApplicationWindow {
         property real progress: 0.0
         property string statusText: "准备压制..."
 
+        onAboutToShow: {
+            exportCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
+        }
+
         ColumnLayout {
             anchors.fill: parent; spacing: 10
             Text {
@@ -3194,16 +3243,28 @@ ApplicationWindow {
                 color: "#38bdf8"; font.pixelSize: 11; lineHeight: 1.3
             }
 
-            Text { text: "导出画幅母带标准："; color: "#cbd5e1"; font.pixelSize: 12 }
+            RowLayout {
+                Layout.fillWidth: true
+                Text { text: "导出画幅母带标准："; color: "#cbd5e1"; font.pixelSize: 12 }
+                Item { Layout.fillWidth: true }
+                Text {
+                    visible: exportCanvasCombo.currentIndex === 0
+                    text: "已自动识别: " + (root.getAutoMasterCanvas() === "vertical" ? "9:16 竖屏" : "16:9 横屏")
+                    color: "#38bdf8"; font.pixelSize: 11; font.bold: true
+                }
+            }
             ComboBox {
                 id: exportCanvasCombo; Layout.fillWidth: true
                 model: [
-                    "3840×2160 16:9 横屏母带 (YouTube / B站 / 电脑大屏)",
-                    "2160×3840 9:16 竖屏大片 (抖音 / 视频号 / 小红书 / 移动端)"
+                    "自动决定 (按时间线视频真实拍摄方向智能自适应 · 推荐)",
+                    "3840×2160 16:9 横屏母带 (强制横屏 · YouTube / B站 / 电脑大屏)",
+                    "2160×3840 9:16 竖屏大片 (强制竖屏 · 抖音 / 视频号 / 小红书 / 移动端)"
                 ]
-                currentIndex: root.masterCanvas === "vertical" ? 1 : 0
+                currentIndex: root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
                 onActivated: {
-                    root.masterCanvas = currentIndex === 1 ? "vertical" : "horizontal"
+                    if (currentIndex === 0) root.canvasChoice = "auto"
+                    else if (currentIndex === 1) root.canvasChoice = "horizontal"
+                    else root.canvasChoice = "vertical"
                 }
             }
 
@@ -3242,7 +3303,18 @@ ApplicationWindow {
                 }
                 Button {
                     text: "开始硬件加速渲染"
-                    onClicked: { bridge.startExport(root.timelineClips, root.masterCanvas, root.targetColor) }
+                    onClicked: {
+                        var expCanvas = "horizontal"
+                        if (exportCanvasCombo.currentIndex === 0) {
+                            expCanvas = root.getAutoMasterCanvas()
+                        } else if (exportCanvasCombo.currentIndex === 1) {
+                            expCanvas = "horizontal"
+                        } else {
+                            expCanvas = "vertical"
+                        }
+                        root.masterCanvas = expCanvas
+                        bridge.startExport(root.timelineClips, expCanvas, root.targetColor)
+                    }
                     background: Rectangle { color: "#2563eb"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }

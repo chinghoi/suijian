@@ -11,17 +11,35 @@ def generate_all_icons(master_image_path, output_dir):
     
     # 1. 紧密裁切到 squircle 本体 (消除 AI 生成图四周多余的 80px 白色画框)
     cropped = src.crop((78, 80, 946, 948))
-    cropped = cropped.resize((1024, 1024), Image.Resampling.LANCZOS)
 
-    # 2. 制作 Apple HIG 连续曲率圆角 Alpha 蒙版 (消除白色外角，实现四角 100% 纯透明)
-    from PIL import ImageDraw
-    mask = Image.new("L", (1024, 1024), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle([(0, 0), (1024, 1024)], radius=224, fill=255)
+    # 2. Apple macOS HIG 标准规范 (macOS 11 Big Sur ~ macOS 15+ Sequoia):
+    # macOS 图标画布虽为 1024×1024，但标准 Squircle 容器主体尺寸严格定义为 824×824 (四周保留 100px 安全衬边)，
+    # 圆角曲率严格定为 185px (约 22.4%)，并在底部附带标准环境光与关键光微投影。
+    # 若将主体强行放大至 1024×1024 全幅无衬边，在 Dock 栏上就会显得比其他原生 App (如 QuickTime / Raycast / Safari) 明显臃肿大一圈！
+    from PIL import ImageDraw, ImageFilter
+    squircle_824 = cropped.resize((824, 824), Image.Resampling.LANCZOS)
 
-    # 纯透明背景 Squircle
-    base_img = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
-    base_img.paste(cropped, (0, 0), mask=mask)
+    mask_824 = Image.new("L", (824, 824), 0)
+    draw_824 = ImageDraw.Draw(mask_824)
+    draw_824.rounded_rectangle([(0, 0), (824, 824)], radius=185, fill=255)
+    squircle_824.putalpha(mask_824)
+
+    # 制作符合 Apple HIG 规范的双层柔和自然阴影 (Key Shadow + Ambient Shadow)
+    s1 = Image.new("RGBA", (824, 824), (0, 0, 0, 65))
+    s1.putalpha(mask_824)
+    shadow1 = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    shadow1.paste(s1, (100, 96 + 14))
+    shadow1 = shadow1.filter(ImageFilter.GaussianBlur(18))
+
+    s2 = Image.new("RGBA", (824, 824), (0, 0, 0, 45))
+    s2.putalpha(mask_824)
+    shadow2 = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    shadow2.paste(s2, (100, 96 + 5))
+    shadow2 = shadow2.filter(ImageFilter.GaussianBlur(8))
+
+    # 合成 100% 严丝合缝对齐 Apple 原生标准规格的 macOS 1024×1024 图标
+    base_img = Image.alpha_composite(shadow1, shadow2)
+    base_img.paste(squircle_824, (100, 96), squircle_824)
 
     os.makedirs(output_dir, exist_ok=True)
     
