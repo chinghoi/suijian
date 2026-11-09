@@ -7,18 +7,28 @@ from PIL import Image
 
 def generate_all_icons(master_image_path, output_dir):
     print(f"Loading master icon: {master_image_path}")
-    base_img = Image.open(master_image_path).convert("RGBA")
+    src = Image.open(master_image_path).convert("RGBA")
     
-    # 确保正方形 1024x1024
-    if base_img.size != (1024, 1024):
-        base_img = base_img.resize((1024, 1024), Image.Resampling.LANCZOS)
+    # 1. 紧密裁切到 squircle 本体 (消除 AI 生成图四周多余的 80px 白色画框)
+    cropped = src.crop((78, 80, 946, 948))
+    cropped = cropped.resize((1024, 1024), Image.Resampling.LANCZOS)
+
+    # 2. 制作 Apple HIG 连续曲率圆角 Alpha 蒙版 (消除白色外角，实现四角 100% 纯透明)
+    from PIL import ImageDraw
+    mask = Image.new("L", (1024, 1024), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle([(0, 0), (1024, 1024)], radius=224, fill=255)
+
+    # 纯透明背景 Squircle
+    base_img = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+    base_img.paste(cropped, (0, 0), mask=mask)
 
     os.makedirs(output_dir, exist_ok=True)
     
-    # 根目录主力 PNG
+    # 根目录主力 PNG (纯透明圆角)
     root_png = os.path.join(output_dir, "icon.png")
     base_img.save(root_png, "PNG")
-    print(f"✓ Generated: {root_png}")
+    print(f"✓ Generated: {root_png} (transparent corners: {base_img.getpixel((0,0))})")
 
     # ==========================================
     # 1. macOS 适配 (.icns + AppIcon.png)

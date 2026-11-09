@@ -11,7 +11,7 @@ ApplicationWindow {
     height: 900
     minimumWidth: 420
     minimumHeight: 640
-    title: "翼剪"
+    title: "DJI 智能剪辑大师 Pro"
     color: "#0c0d11"
 
     // 响应式布局（根据窗口宽度与横竖屏自动无缝切换，完全纯净无人工按钮）
@@ -410,7 +410,7 @@ ApplicationWindow {
                 }
 
                 Text {
-                    text: "翼剪"
+                    text: root.isMobileMode ? "DJI 剪辑 Pro" : "DJI 智能剪辑大师 Pro"
                     color: "#ffffff"
                     font.bold: true
                     font.pixelSize: root.isMobileMode ? 14 : 15
