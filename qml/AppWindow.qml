@@ -999,6 +999,7 @@ ApplicationWindow {
 
                     // 剪辑快捷操作栏 (大拇指触控区)
                     RowLayout {
+                        visible: root.timelineClips.length > 0
                         Layout.fillWidth: true; Layout.preferredHeight: 36
                         Layout.leftMargin: 8; Layout.rightMargin: 8
                         spacing: 6
@@ -1051,6 +1052,7 @@ ApplicationWindow {
 
                     // 触控微调面板
                     Rectangle {
+                        visible: root.timelineClips.length > 0
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.margins: 8; color: "#14151d"; radius: 8; border.color: "#222533"
 
@@ -1084,6 +1086,19 @@ ApplicationWindow {
                                 Text { text: "镜头: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].filename : "无"); color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
                                 Text { text: "截取: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].dur_str : "0s"); color: "#60a5fa"; font.bold: true; font.pixelSize: 11 }
                             }
+                        }
+                    }
+
+                    // 移动端空状态提示
+                    Rectangle {
+                        visible: root.timelineClips.length === 0
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        color: "transparent"
+                        ColumnLayout {
+                            anchors.centerIn: parent
+                            spacing: 8
+                            Text { text: "时间线暂无镜头片段"; color: "#94a3b8"; font.bold: true; font.pixelSize: 13; Layout.alignment: Qt.AlignHCenter }
+                            Text { text: "请在「素材」池选择素材加入时间线\n或在「初筛」运行 AI 自动粗剪"; color: "#64748b"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; Layout.alignment: Qt.AlignHCenter }
                         }
                     }
                 }
@@ -2051,25 +2066,56 @@ ApplicationWindow {
                 }
             }
 
-            // 2.3 右栏：桌面镜头检查器
+            // 2.3 右栏：桌面镜头检查器 (仅在时间线存在镜头片段时展示)
             Rectangle {
-                visible: !root.isTheaterMode
+                id: inspectorPane
+                visible: !root.isTheaterMode && root.timelineClips.length > 0
                 Layout.preferredWidth: 320; Layout.fillHeight: true
                 color: "#121318"; border.color: "#1f222e"; border.width: 1
+
+                readonly property var currentActiveClip: (root.timelineClips.length > root.activeClipIndex && root.activeClipIndex >= 0)
+                                                         ? root.timelineClips[root.activeClipIndex]
+                                                         : null
 
                 ColumnLayout {
                     anchors.fill: parent; anchors.margins: 14; spacing: 12
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Text { text: "镜头 #" + (root.activeClipIndex + 1); color: "#ffffff"; font.bold: true; font.pixelSize: 15 }
+                        Text {
+                            text: "镜头 #" + (root.activeClipIndex + 1)
+                            color: "#ffffff"
+                            font.bold: true
+                            font.pixelSize: 15
+                        }
                         Item { Layout.fillWidth: true }
-                        Rectangle { color: "#3b82f6"; radius: 3; Layout.preferredHeight: 18; Layout.preferredWidth: 64; Text { anchors.centerIn: parent; text: "横屏 16:9"; color: "#ffffff"; font.pixelSize: 10; font.bold: true } }
-                        Rectangle { color: "#8b5cf6"; radius: 3; Layout.preferredHeight: 18; Layout.preferredWidth: 64; Text { anchors.centerIn: parent; text: "10-Bit HDR"; color: "#ffffff"; font.pixelSize: 10; font.bold: true } }
+                        Rectangle {
+                            visible: Boolean(inspectorPane.currentActiveClip)
+                            color: "#3b82f6"; radius: 3
+                            Layout.preferredHeight: 18; Layout.preferredWidth: orientTagText.implicitWidth + 12
+                            Text {
+                                id: orientTagText
+                                anchors.centerIn: parent
+                                text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9"
+                                color: "#ffffff"; font.pixelSize: 10; font.bold: true
+                            }
+                        }
+                        Rectangle {
+                            visible: Boolean(inspectorPane.currentActiveClip)
+                            color: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.is_10bit ? "#8b5cf6" : "#475569"
+                            radius: 3
+                            Layout.preferredHeight: 18; Layout.preferredWidth: colorTagText.implicitWidth + 12
+                            Text {
+                                id: colorTagText
+                                anchors.centerIn: parent
+                                text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.is_10bit ? "10-Bit HDR" : "8-Bit SDR"
+                                color: "#ffffff"; font.pixelSize: 10; font.bold: true
+                            }
+                        }
                     }
 
                     Text {
-                        text: root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].filename : "未选中镜头"
+                        text: inspectorPane.currentActiveClip ? inspectorPane.currentActiveClip.filename : "未选中镜头"
                         color: "#94a3b8"; font.pixelSize: 11; elide: Text.ElideMiddle; Layout.fillWidth: true
                     }
 
@@ -2081,7 +2127,7 @@ ApplicationWindow {
                         RowLayout {
                             Text { text: "起点 (In Point):"; color: "#cbd5e1"; font.pixelSize: 12 }
                             Item { Layout.fillWidth: true }
-                            Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].start) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
+                            Text { text: inspectorPane.currentActiveClip ? root.formatTime(inspectorPane.currentActiveClip.start) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
                         }
 
                         GridLayout {
@@ -2099,7 +2145,7 @@ ApplicationWindow {
                         RowLayout {
                             Text { text: "终点 (Out Point):"; color: "#cbd5e1"; font.pixelSize: 12 }
                             Item { Layout.fillWidth: true }
-                            Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].end) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
+                            Text { text: inspectorPane.currentActiveClip ? root.formatTime(inspectorPane.currentActiveClip.end) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
                         }
 
                         GridLayout {
@@ -2112,7 +2158,7 @@ ApplicationWindow {
                     }
 
                     Text {
-                        text: "截取时长: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].dur_str : "0s")
+                        text: "截取时长: " + (inspectorPane.currentActiveClip ? inspectorPane.currentActiveClip.dur_str : "0s")
                         color: "#60a5fa"; font.bold: true; font.pixelSize: 13
                     }
 
@@ -2169,16 +2215,40 @@ ApplicationWindow {
                         background: Rectangle { color: root.canRedo ? "#222738" : "#141620"; radius: 4; border.color: root.canRedo ? "#475569" : "#1e2230" }
                         contentItem: Text { text: parent.text; color: root.canRedo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
-                    Button { text: "分割 (B)"; onClicked: root.splitCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                    Button { text: "删除 (Del)"; onClicked: root.deleteCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                    Button { text: "◀ 前移"; onClicked: root.moveCurrentClip(-1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                    Button { text: "后移 ▶"; onClicked: root.moveCurrentClip(1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "分割 (B)"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: root.splitCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "删除 (Del)"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: root.deleteCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "◀ 前移"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: root.moveCurrentClip(-1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "后移 ▶"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: root.moveCurrentClip(1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Item { Layout.fillWidth: true }
                     Text { text: "提示：双击/拖拽素材导入时间线 · 支持双指触控撤销"; color: "#64748b"; font.pixelSize: 11 }
                 }
 
+                Item {
+                    visible: root.timelineClips.length === 0
+                    Layout.fillWidth: true; Layout.fillHeight: true
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text {
+                            text: "时间线暂无镜头片段"
+                            color: "#64748b"
+                            font.bold: true
+                            font.pixelSize: 12
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                        Text {
+                            text: "双击左侧素材或点击「+ 加入时间线」/「AI 智能初筛」即可开始精剪"
+                            color: "#475569"
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignHCenter
+                        }
+                    }
+                }
+
                 ListView {
                     id: desktopTimelineView
+                    visible: root.timelineClips.length > 0
                     Layout.fillWidth: true; Layout.fillHeight: true
                     orientation: ListView.Horizontal; clip: true
                     model: root.timelineClips; spacing: 8
