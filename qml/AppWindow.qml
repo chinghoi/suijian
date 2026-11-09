@@ -11,13 +11,19 @@ ApplicationWindow {
     height: 900
     minimumWidth: 420
     minimumHeight: 640
-    title: "DJI 智能剪辑大师 Pro (4K 10-Bit HDR · 全平台响应式)"
+    title: "DJI 智能剪辑大师 Pro (4K 10-Bit HDR · 极速导入)"
     color: "#0c0d11"
 
     // 响应式移动端状态
     property bool isForceMobile: false
     readonly property bool isMobileMode: isForceMobile || (root.width < 920)
-    property int mobileTab: 0 // 0: 🎞️ 剪辑微调, 1: 📁 素材媒体池, 2: ✨ AI初筛
+    property int mobileTab: 1 // 默认在素材池，方便导入
+
+    // 拖拽与素材源状态
+    property bool isDragActive: false
+    property string currentSourceLabel: "未选择"
+    property string detectedDjiPath: ""
+    property var recentDirs: []
 
     // 全局剪辑工程状态
     property var mediaPool: []
@@ -236,8 +242,9 @@ ApplicationWindow {
     Connections {
         target: bridge
 
-        function onMediaLoaded(dates, list) {
+        function onMediaLoaded(dates, list, sourceLabel) {
             root.mediaPool = list
+            root.currentSourceLabel = sourceLabel || "已加载"
             var d = ["全部"]
             for (var i = 0; i < dates.length; i++) d.push(dates[i])
             root.datesList = d
@@ -248,7 +255,25 @@ ApplicationWindow {
                 initSel[list[j].path] = true
             }
             root.selectedPaths = initSel
-            statusBanner.show("成功扫描到 " + list.length + " 个素材文件")
+
+            // 如果已有素材且时间线为空，自动加载第一个预览
+            if (list.length > 0 && root.timelineClips.length === 0) {
+                player.stop()
+                player.source = "file://" + list[0].path
+                player.position = 0
+            }
+            statusBanner.show("成功载入 " + list.length + " 个素材 (" + root.currentSourceLabel + ")")
+        }
+
+        function onDjiFound(path) {
+            root.detectedDjiPath = path
+            if (path && root.mediaPool.length === 0) {
+                statusBanner.show("💡 检测到 DJI 相机已插入: " + path)
+            }
+        }
+
+        function onRecentDirsLoaded(dirs) {
+            root.recentDirs = dirs
         }
 
         function onStatusMessage(msg) {
@@ -256,7 +281,7 @@ ApplicationWindow {
         }
 
         function onScanError(err) {
-            statusBanner.show("⚠️ 扫描提示: " + err)
+            statusBanner.show("⚠️ 提示: " + err)
         }
 
         function onAiProgress(percent, stepText) {
@@ -292,6 +317,8 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        bridge.loadRecentDirs()
+        bridge.detectDji()
         bridge.scanDirectory("")
     }
 
@@ -308,14 +335,61 @@ ApplicationWindow {
     Shortcut { sequence: "B"; onActivated: root.splitCurrentClip() }
     Shortcut { sequence: "Delete"; onActivated: root.deleteCurrentClip() }
 
-    // 主视口容器
+    // ==========================================
+    // 全局拖拽支持 (支持直接从 Finder / 资源管理器拖入)
+    // ==========================================
+    DropArea {
+        anchors.fill: parent
+        onEntered: (drag) => {
+            if (drag.hasUrls) {
+                drag.accept()
+                root.isDragActive = true
+            }
+        }
+        onExited: {
+            root.isDragActive = false
+        }
+        onDropped: (drop) => {
+            root.isDragActive = false
+            if (drop.hasUrls) {
+                var paths = []
+                for (var i = 0; i < drop.urls.length; i++) {
+                    var u = drop.urls[i].toString()
+                    if (u.indexOf("file://") === 0) u = decodeURIComponent(u.substring(7))
+                    paths.push(u)
+                }
+                bridge.importPaths(paths)
+            }
+        }
+    }
+
+    // 拖拽高亮浮层蒙层
+    Rectangle {
+        anchors.fill: parent
+        color: "#e60b1120"
+        border.color: "#38bdf8"
+        border.width: 3
+        visible: root.isDragActive
+        z: 9999
+
+        ColumnLayout {
+            anchors.centerIn: parent
+            spacing: 14
+
+            Text { Layout.alignment: Qt.AlignHCenter; text: "📥"; font.pixelSize: 54 }
+            Text { Layout.alignment: Qt.AlignHCenter; text: "松开鼠标即可瞬间导入视频素材"; color: "#38bdf8"; font.bold: true; font.pixelSize: 20 }
+            Text { Layout.alignment: Qt.AlignHCenter; text: "支持拖入单个/多个 .MP4 / .MOV 视频文件，或直接拖入整个文件夹"; color: "#94a3b8"; font.pixelSize: 13 }
+        }
+    }
+
+    // ==========================================
+    // 主界面视图
+    // ==========================================
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // ==========================================
-        // 1. 顶部全局导航栏 (自适应桌面 & 移动端)
-        // ==========================================
+        // 1. 顶部全局导航栏
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: root.isMobileMode ? 48 : 52
@@ -327,7 +401,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.leftMargin: root.isMobileMode ? 10 : 16
                 anchors.rightMargin: root.isMobileMode ? 10 : 16
-                spacing: root.isMobileMode ? 8 : 12
+                spacing: root.isMobileMode ? 8 : 10
 
                 Text {
                     text: root.isMobileMode ? "🎬 DJI 剪辑 Pro" : "🎬 DJI 智能剪辑大师 Pro"
@@ -336,9 +410,36 @@ ApplicationWindow {
                     font.pixelSize: root.isMobileMode ? 14 : 15
                 }
 
+                // 快捷导入按钮 (桌面端顶栏直达)
+                RowLayout {
+                    visible: !root.isMobileMode
+                    spacing: 6
+
+                    Button {
+                        text: "📁 选目录"
+                        onClicked: folderDialog.open()
+                        background: Rectangle { color: "#1e2436"; radius: 4; border.color: "#334155" }
+                        contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+
+                    Button {
+                        text: "🎬 选视频 (多选)"
+                        onClicked: fileDialog.open()
+                        background: Rectangle { color: "#1e2436"; radius: 4; border.color: "#334155" }
+                        contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+
+                    Button {
+                        text: "🔄 扫相机"
+                        onClicked: bridge.detectDji()
+                        background: Rectangle { color: "#1e2436"; radius: 4; border.color: "#334155" }
+                        contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                }
+
                 Item { Layout.fillWidth: true }
 
-                // 成片概览 Pill (移动端以紧凑显示)
+                // 成片概览 Pill
                 Rectangle {
                     color: "#1a1f2c"
                     border.color: "#38bdf8"
@@ -361,7 +462,7 @@ ApplicationWindow {
                     }
                 }
 
-                // 响应式布局快捷切换测试开关 (可一键切换手机/桌面视图)
+                // 响应式布局快捷切换测试开关
                 Button {
                     text: root.isForceMobile ? "💻 切回桌面" : "📱 移动端布局"
                     onClicked: root.isForceMobile = !root.isForceMobile
@@ -386,14 +487,12 @@ ApplicationWindow {
             }
         }
 
-        // ==========================================
         // 2. 核心工作台视图分支：
-        //    分支 A: 📱 移动端紧凑专业流体布局 (isMobileMode == true)
-        //    分支 B: 💻 桌面端三栏专业工作台 (isMobileMode == false)
-        // ==========================================
+        //    分支 A: 📱 移动端布局 (isMobileMode == true)
+        //    分支 B: 💻 桌面端三栏布局 (isMobileMode == false)
 
         // ------------------------------------------
-        // 分支 A: 📱 移动端专业布局 (高度自适应、触控友善)
+        // 分支 A: 📱 移动端专业流体布局
         // ------------------------------------------
         ColumnLayout {
             visible: root.isMobileMode
@@ -401,7 +500,7 @@ ApplicationWindow {
             Layout.fillHeight: true
             spacing: 0
 
-            // 移动端监视器视窗 (占比约 36% 黄金比例)
+            // 移动端监视器视窗
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.floor(root.height * 0.38)
@@ -414,7 +513,6 @@ ApplicationWindow {
                     fillMode: VideoOutput.PreserveAspectFit
                 }
 
-                // 触摸视频画面快速播放/暂停
                 MouseArea {
                     anchors.fill: parent
                     onClicked: {
@@ -423,7 +521,6 @@ ApplicationWindow {
                     }
                 }
 
-                // 浮层：全屏 & 剧场模式按钮
                 RowLayout {
                     anchors.top: parent.top
                     anchors.right: parent.right
@@ -431,9 +528,7 @@ ApplicationWindow {
                     spacing: 6
 
                     Rectangle {
-                        color: "#cc0f172a"
-                        radius: 4
-                        width: 54; height: 22
+                        color: "#cc0f172a"; radius: 4; width: 54; height: 22
                         Text { anchors.centerIn: parent; text: "10-Bit"; color: "#a855f7"; font.bold: true; font.pixelSize: 10 }
                     }
 
@@ -460,13 +555,11 @@ ApplicationWindow {
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
+                    anchors.leftMargin: 10; anchors.rightMargin: 10
                     spacing: 8
 
                     Button {
-                        text: "-1s"
-                        Layout.preferredWidth: 38; Layout.preferredHeight: 28
+                        text: "-1s"; Layout.preferredWidth: 38; Layout.preferredHeight: 28
                         onClicked: player.position = Math.max(0, player.position - 1000)
                         background: Rectangle { color: "#222533"; radius: 4 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -484,19 +577,15 @@ ApplicationWindow {
                     }
 
                     Button {
-                        text: "+1s"
-                        Layout.preferredWidth: 38; Layout.preferredHeight: 28
+                        text: "+1s"; Layout.preferredWidth: 38; Layout.preferredHeight: 28
                         onClicked: player.position = player.position + 1000
                         background: Rectangle { color: "#222533"; radius: 4 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
 
-                    // 码表
                     Text {
                         text: root.formatTime(player.position / 1000.0) + " / " + root.formatTime(root.totalMovieDuration)
-                        color: "#38bdf8"
-                        font.bold: true
-                        font.pixelSize: 11
+                        color: "#38bdf8"; font.bold: true; font.pixelSize: 11
                     }
 
                     Item { Layout.fillWidth: true }
@@ -511,7 +600,7 @@ ApplicationWindow {
                 }
             }
 
-            // 移动端中间可切换工作区 (由底部选项卡切换)
+            // 移动端中间切换内容区
             Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -522,7 +611,6 @@ ApplicationWindow {
                     visible: root.mobileTab === 0
                     spacing: 6
 
-                    // A1. 胶片时间线横向滑动轨道 (触控大卡片)
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 115
@@ -540,213 +628,204 @@ ApplicationWindow {
                             delegate: Rectangle {
                                 width: Math.max(85, Math.min(200, Number(modelData.dur || 5) * 8))
                                 height: 100
-                                radius: 6
-                                clip: true
+                                radius: 6; clip: true
                                 color: root.activeClipIndex === index ? "#1e293b" : "#141620"
                                 border.color: root.activeClipIndex === index ? "#38bdf8" : "#2d3345"
                                 border.width: root.activeClipIndex === index ? 2 : 1
 
-                                Image {
-                                    anchors.fill: parent
-                                    source: modelData.thumb
-                                    fillMode: Image.PreserveAspectCrop
-                                    opacity: 0.65
-                                }
+                                Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop; opacity: 0.65 }
 
                                 Rectangle {
-                                    anchors.top: parent.top
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    height: 20
-                                    color: "#cc0f172a"
+                                    anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+                                    height: 20; color: "#cc0f172a"
                                     RowLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 4
+                                        anchors.fill: parent; anchors.margins: 4
                                         Text { text: "#" + (index + 1); color: "#ffffff"; font.bold: true; font.pixelSize: 10 }
                                         Item { Layout.fillWidth: true }
                                         Text { text: modelData.dur_str; color: "#38bdf8"; font.bold: true; font.pixelSize: 10 }
                                     }
                                 }
 
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: root.loadActiveClip(index, false)
-                                }
+                                MouseArea { anchors.fill: parent; onClicked: root.loadActiveClip(index, false) }
                             }
                         }
                     }
 
-                    // A2. 剪辑快捷操作栏 (分割/复制/删除/微调)
+                    // 剪辑快捷操作栏
                     RowLayout {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 36
-                        Layout.leftMargin: 8
-                        Layout.rightMargin: 8
+                        Layout.fillWidth: true; Layout.preferredHeight: 36
+                        Layout.leftMargin: 8; Layout.rightMargin: 8
                         spacing: 6
 
                         Button {
-                            text: "✂️ 分割"
-                            Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "✂️ 分割"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.splitCurrentClip()
                             background: Rectangle { color: "#854d0e"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
-                            text: "➕ 复制"
-                            Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "➕ 复制"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.duplicateCurrentClip()
                             background: Rectangle { color: "#1e3a8a"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
-                            text: "🗑️ 删除"
-                            Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "🗑️ 删除"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.deleteCurrentClip()
                             background: Rectangle { color: "#7f1d1d"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
-                            text: "◀ 前移"
-                            Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "◀ 前移"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.moveCurrentClip(-1)
                             background: Rectangle { color: "#1e2230"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
-                            text: "后移 ▶"
-                            Layout.fillWidth: true; Layout.preferredHeight: 36
+                            text: "后移 ▶"; Layout.fillWidth: true; Layout.preferredHeight: 36
                             onClicked: root.moveCurrentClip(1)
                             background: Rectangle { color: "#1e2230"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                     }
 
-                    // A3. 大按钮 In/Out 毫秒级触控微调面板
+                    // 触控微调面板
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        Layout.margins: 8
-                        color: "#14151d"
-                        radius: 8
-                        border.color: "#222533"
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        Layout.margins: 8; color: "#14151d"; radius: 8; border.color: "#222533"
 
                         ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 8
-                            spacing: 6
+                            anchors.fill: parent; anchors.margins: 8; spacing: 6
 
-                            // 起点微调行
                             RowLayout {
                                 Layout.fillWidth: true
                                 Text { text: "起点 In:"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Text {
-                                    text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].start) : "00:00"
-                                    color: "#38bdf8"; font.bold: true; font.pixelSize: 12
-                                }
+                                Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].start) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
                                 Item { Layout.fillWidth: true }
-                                Button {
-                                    text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveIn(-2.0)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
-                                Button {
-                                    text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveIn(-0.5)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
-                                Button {
-                                    text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveIn(0.5)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
-                                Button {
-                                    text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveIn(2.0)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
+                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                             }
 
-                            // 终点微调行
                             RowLayout {
                                 Layout.fillWidth: true
                                 Text { text: "终点 Out:"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Text {
-                                    text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].end) : "00:00"
-                                    color: "#38bdf8"; font.bold: true; font.pixelSize: 12
-                                }
+                                Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].end) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
                                 Item { Layout.fillWidth: true }
-                                Button {
-                                    text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveOut(-2.0)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
-                                Button {
-                                    text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveOut(-0.5)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
-                                Button {
-                                    text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveOut(0.5)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
-                                Button {
-                                    text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30
-                                    onClicked: root.stepActiveOut(2.0)
-                                    background: Rectangle { color: "#222533"; radius: 4 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
+                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                             }
 
-                            // 镜头详情提示
                             RowLayout {
                                 Layout.fillWidth: true
-                                Text {
-                                    text: "镜头: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].filename : "无")
-                                    color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true
-                                }
-                                Text {
-                                    text: "截取: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].dur_str : "0s")
-                                    color: "#60a5fa"; font.bold: true; font.pixelSize: 11
-                                }
+                                Text { text: "镜头: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].filename : "无"); color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                Text { text: "截取: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].dur_str : "0s"); color: "#60a5fa"; font.bold: true; font.pixelSize: 11 }
                             }
                         }
                     }
                 }
 
-                // Tab 1: 📁 移动端素材池 (大缩略图触控列表)
+                // Tab 1: 📁 移动端素材池
                 ColumnLayout {
                     anchors.fill: parent
                     visible: root.mobileTab === 1
                     spacing: 4
 
-                    // 日期过滤条
+                    // 移动端快速导入操作条
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 36
+                        Layout.preferredHeight: 38
                         color: "#161822"
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 8; anchors.rightMargin: 8
                             spacing: 6
+
+                            Button {
+                                text: "📁 选目录"
+                                Layout.fillWidth: true; Layout.preferredHeight: 28
+                                onClicked: folderDialog.open()
+                                background: Rectangle { color: "#1e293b"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "🎬 选视频"
+                                Layout.fillWidth: true; Layout.preferredHeight: 28
+                                onClicked: fileDialog.open()
+                                background: Rectangle { color: "#1e293b"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "🔄 扫相机"
+                                Layout.fillWidth: true; Layout.preferredHeight: 28
+                                onClicked: bridge.detectDji()
+                                background: Rectangle { color: "#1e3a8a"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                        }
+                    }
+
+                    // 空态大卡片 (素材池为空时显示)
+                    Rectangle {
+                        visible: root.mediaPool.length === 0
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        color: "#12131a"
+
+                        ColumnLayout {
+                            anchors.centerIn: parent
+                            spacing: 12
+                            width: Math.min(360, parent.width - 24)
+
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "📁"; font.pixelSize: 42 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "素材库为空"; color: "#f8fafc"; font.bold: true; font.pixelSize: 15 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "请选择包含视频的目录，或直接选取视频文件"; color: "#94a3b8"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter }
+
+                            Button {
+                                text: "📁 选择视频文件夹 (整个目录)"
+                                Layout.fillWidth: true; Layout.preferredHeight: 40
+                                onClicked: folderDialog.open()
+                                background: Rectangle { color: "#2563eb"; radius: 6 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "🎬 选择特定视频文件 (可多选)"
+                                Layout.fillWidth: true; Layout.preferredHeight: 40
+                                onClicked: fileDialog.open()
+                                background: Rectangle { color: "#1e293b"; radius: 6; border.color: "#334155" }
+                                contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            // 相机检测提示
+                            Button {
+                                visible: root.detectedDjiPath !== ""
+                                text: "💾 检测到 DJI 相机已插入 [一键载入]"
+                                Layout.fillWidth: true; Layout.preferredHeight: 40
+                                onClicked: bridge.scanDirectory(root.detectedDjiPath)
+                                background: Rectangle { color: "#065f46"; radius: 6; border.color: "#10b981" }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                        }
+                    }
+
+                    // 日期过滤条 (有素材时显示)
+                    Rectangle {
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 34
+                        color: "#161822"
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
                             Repeater {
                                 model: root.datesList
                                 delegate: Rectangle {
-                                    Layout.preferredHeight: 24; Layout.preferredWidth: 64
-                                    radius: 4
+                                    Layout.preferredHeight: 24; Layout.preferredWidth: 64; radius: 4
                                     color: root.activeDate === modelData ? "#3b82f6" : "#222533"
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: modelData
-                                        color: "#ffffff"; font.pixelSize: 10; font.bold: root.activeDate === modelData
-                                    }
+                                    Text { anchors.centerIn: parent; text: modelData; color: "#ffffff"; font.pixelSize: 10; font.bold: root.activeDate === modelData }
                                     MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
                                 }
                             }
@@ -761,27 +840,21 @@ ApplicationWindow {
                         }
                     }
 
-                    // 移动端素材大列表
+                    // 素材列表 (有素材时显示)
                     ListView {
                         id: mobileMediaList
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        spacing: 4
-                        model: root.getFilteredMedia()
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        clip: true; spacing: 4; model: root.getFilteredMedia()
 
                         delegate: Rectangle {
-                            width: mobileMediaList.width
-                            height: 64
+                            width: mobileMediaList.width; height: 64
                             color: root.selectedPaths[modelData.path] ? "#1e2436" : "#14151d"
                             border.color: root.selectedPaths[modelData.path] ? "#3b82f6" : "#1f222e"
                             border.width: 1
 
                             RowLayout {
-                                anchors.fill: parent
-                                anchors.margins: 6
-                                spacing: 8
-
+                                anchors.fill: parent; anchors.margins: 6; spacing: 8
                                 CheckBox {
                                     checked: !!root.selectedPaths[modelData.path]
                                     onToggled: {
@@ -791,14 +864,10 @@ ApplicationWindow {
                                         root.selectedPaths = map
                                     }
                                 }
-
                                 Rectangle {
-                                    Layout.preferredWidth: 70
-                                    Layout.fillHeight: true
-                                    radius: 4; clip: true; color: "#000000"
+                                    Layout.preferredWidth: 70; Layout.fillHeight: true; radius: 4; clip: true; color: "#000000"
                                     Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop }
                                 }
-
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 2
                                     Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
@@ -806,8 +875,7 @@ ApplicationWindow {
                                         spacing: 4
                                         Text { text: modelData.duration_str; color: "#94a3b8"; font.pixelSize: 10 }
                                         Rectangle {
-                                            color: modelData.is_10bit ? "#8b5cf6" : "#334155"
-                                            radius: 2
+                                            color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
                                             Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
                                             Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit D-Log" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                                         }
@@ -816,8 +884,7 @@ ApplicationWindow {
                             }
 
                             MouseArea {
-                                anchors.fill: parent
-                                propagateComposedEvents: true
+                                anchors.fill: parent; propagateComposedEvents: true
                                 onClicked: (mouse) => {
                                     player.stop()
                                     player.source = "file://" + modelData.path
@@ -881,17 +948,13 @@ ApplicationWindow {
                 }
             }
 
-            // 移动端底部专用大拇指导航栏 (高度 52，触控防误触)
+            // 移动端底部专用大拇指导航栏
             Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 52
-                color: "#11131a"
-                border.color: "#1e222d"
-                border.width: 1
+                Layout.fillWidth: true; Layout.preferredHeight: 52
+                color: "#11131a"; border.color: "#1e222d"; border.width: 1
 
                 RowLayout {
-                    anchors.fill: parent
-                    spacing: 0
+                    anchors.fill: parent; spacing: 0
 
                     // Tab 0
                     Rectangle {
@@ -933,70 +996,147 @@ ApplicationWindow {
         }
 
         // ------------------------------------------
-        // 分支 B: 💻 桌面端三栏专业工作台 (当 !isMobileMode 时展示)
+        // 分支 B: 💻 桌面端三栏专业工作台
         // ------------------------------------------
         RowLayout {
             visible: !root.isMobileMode
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.fillWidth: true; Layout.fillHeight: true
             spacing: 0
 
             // 2.1 左栏：素材池
             Rectangle {
                 visible: !root.isTheaterMode
-                Layout.preferredWidth: 300
+                Layout.preferredWidth: 320
                 Layout.fillHeight: true
-                color: "#121318"
-                border.color: "#1f222e"
-                border.width: 1
+                color: "#121318"; border.color: "#1f222e"; border.width: 1
 
                 ColumnLayout {
-                    anchors.fill: parent
-                    spacing: 0
+                    anchors.fill: parent; spacing: 0
 
-                    // 日期过滤选项卡
+                    // 顶部快捷导入工具栏
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 40
-                        color: "#161822"
+                        Layout.fillWidth: true; Layout.preferredHeight: 44
+                        color: "#161822"; border.color: "#1f222e"; border.width: 1
+
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 8
-                            anchors.rightMargin: 8
-                            spacing: 6
-                            Repeater {
-                                model: root.datesList
-                                delegate: Rectangle {
-                                    Layout.preferredHeight: 26
-                                    Layout.preferredWidth: 70
-                                    radius: 4
-                                    color: root.activeDate === modelData ? "#3b82f6" : "#222533"
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: modelData
-                                        color: "#ffffff"
-                                        font.pixelSize: 11
-                                        font.bold: root.activeDate === modelData
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        onClicked: root.activeDate = modelData
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
+
+                            Button {
+                                text: "📁 选文件夹"
+                                Layout.fillWidth: true; Layout.preferredHeight: 28
+                                onClicked: folderDialog.open()
+                                background: Rectangle { color: "#1e293b"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "🎬 选文件"
+                                Layout.fillWidth: true; Layout.preferredHeight: 28
+                                onClicked: fileDialog.open()
+                                background: Rectangle { color: "#1e293b"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "🔄 扫相机"
+                                Layout.fillWidth: true; Layout.preferredHeight: 28
+                                onClicked: bridge.detectDji()
+                                background: Rectangle { color: "#1e3a8a"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                        }
+                    }
+
+                    // 空态大卡片 (无素材时显示)
+                    Rectangle {
+                        visible: root.mediaPool.length === 0
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        color: "#12131a"
+
+                        ColumnLayout {
+                            anchors.centerIn: parent
+                            spacing: 14
+                            width: Math.min(280, parent.width - 24)
+
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "📁"; font.pixelSize: 48 }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: "素材库为空"; color: "#f8fafc"; font.bold: true; font.pixelSize: 16 }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "支持将视频或文件夹直接拖入窗口\n或点击下方按钮手动导入"
+                                color: "#94a3b8"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; lineHeight: 1.3
+                            }
+
+                            Button {
+                                text: "📁 导入视频文件夹"
+                                Layout.fillWidth: true; Layout.preferredHeight: 42
+                                onClicked: folderDialog.open()
+                                background: Rectangle { color: "#2563eb"; radius: 6 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "🎬 选取视频文件 (支持多选)"
+                                Layout.fillWidth: true; Layout.preferredHeight: 42
+                                onClicked: fileDialog.open()
+                                background: Rectangle { color: "#1e293b"; radius: 6; border.color: "#334155" }
+                                contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            // 插入的相机提示
+                            Button {
+                                visible: root.detectedDjiPath !== ""
+                                text: "💾 发现相机卡 [一键导入]"
+                                Layout.fillWidth: true; Layout.preferredHeight: 42
+                                onClicked: bridge.scanDirectory(root.detectedDjiPath)
+                                background: Rectangle { color: "#065f46"; radius: 6; border.color: "#10b981" }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            // 历史记录
+                            ColumnLayout {
+                                visible: root.recentDirs.length > 0
+                                Layout.fillWidth: true; spacing: 6
+                                Text { text: "最近使用的目录:"; color: "#64748b"; font.pixelSize: 11 }
+                                Repeater {
+                                    model: root.recentDirs.slice(0, 3)
+                                    delegate: Button {
+                                        Layout.fillWidth: true; Layout.preferredHeight: 26
+                                        text: "📂 " + modelData.split("/").pop()
+                                        onClicked: bridge.scanDirectory(modelData)
+                                        background: Rectangle { color: "#181a24"; radius: 4 }
+                                        contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 10; elide: Text.ElideMiddle; verticalAlignment: Text.AlignVCenter }
                                     }
                                 }
                             }
                         }
                     }
 
-                    // 全选与已选计数
+                    // 日期过滤选项卡 (有素材时显示)
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 34
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 38
+                        color: "#161822"
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
+                            Repeater {
+                                model: root.datesList
+                                delegate: Rectangle {
+                                    Layout.preferredHeight: 24; Layout.preferredWidth: 68; radius: 4
+                                    color: root.activeDate === modelData ? "#3b82f6" : "#222533"
+                                    Text { anchors.centerIn: parent; text: modelData; color: "#ffffff"; font.pixelSize: 11; font.bold: root.activeDate === modelData }
+                                    MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
+                                }
+                            }
+                        }
+                    }
+
+                    // 全选与已选计数 (有素材时显示)
+                    Rectangle {
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 32
                         color: "#181a24"
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            spacing: 8
+                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
                             Button {
                                 text: "全选当前日期素材"
                                 onClicked: root.toggleSelectAllInActiveDate()
@@ -1004,35 +1144,25 @@ ApplicationWindow {
                                 contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
                             Item { Layout.fillWidth: true }
-                            Text {
-                                text: "已选 " + root.getSelectedCount() + " 个"
-                                color: "#94a3b8"
-                                font.pixelSize: 11
-                            }
+                            Text { text: "已选 " + root.getSelectedCount() + " 个"; color: "#94a3b8"; font.pixelSize: 11 }
                         }
                     }
 
-                    // 素材列表
+                    // 素材列表 (有素材时显示)
                     ListView {
                         id: desktopMediaListView
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        model: root.getFilteredMedia()
-                        spacing: 4
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        clip: true; model: root.getFilteredMedia(); spacing: 4
 
                         delegate: Rectangle {
-                            width: desktopMediaListView.width
-                            height: 68
+                            width: desktopMediaListView.width; height: 68
                             color: root.selectedPaths[modelData.path] ? "#1e2436" : "#14151d"
                             border.color: root.selectedPaths[modelData.path] ? "#3b82f6" : "transparent"
                             border.width: 1
 
                             RowLayout {
-                                anchors.fill: parent
-                                anchors.margins: 6
-                                spacing: 8
-
+                                anchors.fill: parent; anchors.margins: 6; spacing: 8
                                 CheckBox {
                                     checked: !!root.selectedPaths[modelData.path]
                                     onToggled: {
@@ -1042,45 +1172,27 @@ ApplicationWindow {
                                         root.selectedPaths = map
                                     }
                                 }
-
                                 Rectangle {
-                                    Layout.preferredWidth: 80
-                                    Layout.fillHeight: true
-                                    radius: 4; clip: true; color: "#000000"
-                                    Image {
-                                        anchors.fill: parent
-                                        source: modelData.thumb
-                                        fillMode: Image.PreserveAspectCrop
-                                    }
+                                    Layout.preferredWidth: 80; Layout.fillHeight: true; radius: 4; clip: true; color: "#000000"
+                                    Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop }
                                 }
-
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 2
-                                    Text {
-                                        text: modelData.filename
-                                        color: "#ffffff"; font.pixelSize: 11; font.bold: true
-                                        elide: Text.ElideMiddle; Layout.fillWidth: true
-                                    }
+                                    Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
                                     RowLayout {
                                         spacing: 4
                                         Text { text: modelData.duration_str; color: "#94a3b8"; font.pixelSize: 10 }
                                         Rectangle {
-                                            color: modelData.is_10bit ? "#8b5cf6" : "#334155"
-                                            radius: 2
+                                            color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
                                             Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
-                                            Text {
-                                                anchors.centerIn: parent
-                                                text: modelData.is_10bit ? "10-Bit D-Log" : "8-Bit"
-                                                color: "#ffffff"; font.pixelSize: 9; font.bold: true
-                                            }
+                                            Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit D-Log" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                                         }
                                     }
                                 }
                             }
 
                             MouseArea {
-                                anchors.fill: parent
-                                propagateComposedEvents: true
+                                anchors.fill: parent; propagateComposedEvents: true
                                 onClicked: (mouse) => {
                                     player.stop()
                                     player.source = "file://" + modelData.path
@@ -1096,17 +1208,14 @@ ApplicationWindow {
 
             // 2.2 中栏：桌面大屏监视器
             Rectangle {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
+                Layout.fillWidth: true; Layout.fillHeight: true
                 color: "#050608"
 
                 ColumnLayout {
-                    anchors.fill: parent
-                    spacing: 0
+                    anchors.fill: parent; spacing: 0
 
                     Item {
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        Layout.fillWidth: true; Layout.fillHeight: true
 
                         VideoOutput {
                             id: desktopMonitorOutput
@@ -1117,21 +1226,14 @@ ApplicationWindow {
 
                     // 监视器控制栏
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 48
-                        color: "#11131a"
-                        border.color: "#1e222d"
-                        border.width: 1
+                        Layout.fillWidth: true; Layout.preferredHeight: 48
+                        color: "#11131a"; border.color: "#1e222d"; border.width: 1
 
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 16
-                            anchors.rightMargin: 16
-                            spacing: 12
+                            anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 12
 
                             Button {
-                                text: "-1s"
-                                onClicked: player.position = Math.max(0, player.position - 1000)
+                                text: "-1s"; onClicked: player.position = Math.max(0, player.position - 1000)
                                 background: Rectangle { color: "#222533"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
@@ -1147,17 +1249,14 @@ ApplicationWindow {
                             }
 
                             Button {
-                                text: "+1s"
-                                onClicked: player.position = player.position + 1000
+                                text: "+1s"; onClicked: player.position = player.position + 1000
                                 background: Rectangle { color: "#222533"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
 
                             Text {
                                 text: root.formatTime(player.position / 1000.0) + " / " + root.formatTime(root.totalMovieDuration) + " (镜头 #" + (root.activeClipIndex + 1) + ")"
-                                color: "#38bdf8"
-                                font.bold: true
-                                font.pixelSize: 12
+                                color: "#38bdf8"; font.bold: true; font.pixelSize: 12
                             }
 
                             Item { Layout.fillWidth: true }
@@ -1193,36 +1292,18 @@ ApplicationWindow {
             // 2.3 右栏：桌面镜头检查器
             Rectangle {
                 visible: !root.isTheaterMode
-                Layout.preferredWidth: 320
-                Layout.fillHeight: true
-                color: "#121318"
-                border.color: "#1f222e"
-                border.width: 1
+                Layout.preferredWidth: 320; Layout.fillHeight: true
+                color: "#121318"; border.color: "#1f222e"; border.width: 1
 
                 ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 14
-                    spacing: 12
+                    anchors.fill: parent; anchors.margins: 14; spacing: 12
 
                     RowLayout {
                         Layout.fillWidth: true
-                        Text {
-                            text: "镜头 #" + (root.activeClipIndex + 1)
-                            color: "#ffffff"
-                            font.bold: true
-                            font.pixelSize: 15
-                        }
+                        Text { text: "镜头 #" + (root.activeClipIndex + 1); color: "#ffffff"; font.bold: true; font.pixelSize: 15 }
                         Item { Layout.fillWidth: true }
-                        Rectangle {
-                            color: "#3b82f6"; radius: 3
-                            Layout.preferredHeight: 18; Layout.preferredWidth: 64
-                            Text { anchors.centerIn: parent; text: "横屏 16:9"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
-                        }
-                        Rectangle {
-                            color: "#8b5cf6"; radius: 3
-                            Layout.preferredHeight: 18; Layout.preferredWidth: 64
-                            Text { anchors.centerIn: parent; text: "10-Bit HDR"; color: "#ffffff"; font.pixelSize: 10; font.bold: true }
-                        }
+                        Rectangle { color: "#3b82f6"; radius: 3; Layout.preferredHeight: 18; Layout.preferredWidth: 64; Text { anchors.centerIn: parent; text: "横屏 16:9"; color: "#ffffff"; font.pixelSize: 10; font.bold: true } }
+                        Rectangle { color: "#8b5cf6"; radius: 3; Layout.preferredHeight: 18; Layout.preferredWidth: 64; Text { anchors.centerIn: parent; text: "10-Bit HDR"; color: "#ffffff"; font.pixelSize: 10; font.bold: true } }
                     }
 
                     Text {
@@ -1238,10 +1319,7 @@ ApplicationWindow {
                         RowLayout {
                             Text { text: "起点 (In Point):"; color: "#cbd5e1"; font.pixelSize: 12 }
                             Item { Layout.fillWidth: true }
-                            Text {
-                                text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].start) : "00:00"
-                                color: "#38bdf8"; font.bold: true; font.pixelSize: 13
-                            }
+                            Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].start) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
                         }
 
                         GridLayout {
@@ -1259,10 +1337,7 @@ ApplicationWindow {
                         RowLayout {
                             Text { text: "终点 (Out Point):"; color: "#cbd5e1"; font.pixelSize: 12 }
                             Item { Layout.fillWidth: true }
-                            Text {
-                                text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].end) : "00:00"
-                                color: "#38bdf8"; font.bold: true; font.pixelSize: 13
-                            }
+                            Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].end) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
                         }
 
                         GridLayout {
@@ -1305,59 +1380,42 @@ ApplicationWindow {
             }
         }
 
-        // ------------------------------------------
-        // 桌面端底部胶片时间线 (只在 !isMobileMode 时展示)
-        // ------------------------------------------
+        // 桌面端底部胶片时间线
         Rectangle {
             visible: !root.isMobileMode
-            Layout.fillWidth: true
-            Layout.preferredHeight: 180
-            color: "#0f1016"
-            border.color: "#1e212d"
-            border.width: 1
+            Layout.fillWidth: true; Layout.preferredHeight: 180
+            color: "#0f1016"; border.color: "#1e212d"; border.width: 1
 
             ColumnLayout {
-                anchors.fill: parent
-                spacing: 4
+                anchors.fill: parent; spacing: 4
 
                 RowLayout {
                     Layout.fillWidth: true; Layout.preferredHeight: 28
-                    anchors.leftMargin: 12; anchors.rightMargin: 12
-                    spacing: 8
+                    anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
 
                     Button { text: "✂️ 分割 (B)"; onClicked: root.splitCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "🗑️ 删除 (Del)"; onClicked: root.deleteCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "◀ 前移"; onClicked: root.moveCurrentClip(-1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "后移 ▶"; onClicked: root.moveCurrentClip(1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Item { Layout.fillWidth: true }
-                    Text { text: "💡 提示：点击时间线镜头选中并自动就位，双端把手微调长短"; color: "#64748b"; font.pixelSize: 11 }
+                    Text { text: "💡 提示：支持直接拖拽视频文件或文件夹到窗口任何位置导入"; color: "#64748b"; font.pixelSize: 11 }
                 }
 
                 ListView {
                     id: desktopTimelineView
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    orientation: ListView.Horizontal
-                    clip: true
-                    model: root.timelineClips
-                    spacing: 8
-                    anchors.leftMargin: 12
-                    anchors.rightMargin: 12
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    orientation: ListView.Horizontal; clip: true
+                    model: root.timelineClips; spacing: 8
+                    anchors.leftMargin: 12; anchors.rightMargin: 12
 
                     delegate: Rectangle {
                         width: Math.max(90, Math.min(260, Number(modelData.dur || 5) * 8))
-                        height: 110
-                        radius: 6; clip: true
+                        height: 110; radius: 6; clip: true
                         color: root.activeClipIndex === index ? "#1e293b" : "#141620"
                         border.color: root.activeClipIndex === index ? "#38bdf8" : "#2d3345"
                         border.width: root.activeClipIndex === index ? 2 : 1
 
-                        Image {
-                            anchors.fill: parent
-                            source: modelData.thumb
-                            fillMode: Image.PreserveAspectCrop
-                            opacity: 0.65
-                        }
+                        Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop; opacity: 0.65 }
 
                         Rectangle {
                             anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
@@ -1381,10 +1439,7 @@ ApplicationWindow {
                             }
                         }
 
-                        MouseArea {
-                            anchors.fill: parent
-                            onClicked: root.loadActiveClip(index, false)
-                        }
+                        MouseArea { anchors.fill: parent; onClicked: root.loadActiveClip(index, false) }
                     }
                 }
             }
@@ -1398,77 +1453,44 @@ ApplicationWindow {
         anchors.bottomMargin: root.isMobileMode ? 64 : 190
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.max(260, bannerText.implicitWidth + 36)
-        height: 36
-        radius: 18
-        color: "#f80f172a"
-        border.color: "#38bdf8"
-        border.width: 1
-        opacity: 0
-        visible: opacity > 0
+        height: 36; radius: 18
+        color: "#f80f172a"; border.color: "#38bdf8"; border.width: 1
+        opacity: 0; visible: opacity > 0
 
-        Text {
-            id: bannerText
-            anchors.centerIn: parent
-            color: "#ffffff"
-            font.bold: true
-            font.pixelSize: 12
-        }
-
+        Text { id: bannerText; anchors.centerIn: parent; color: "#ffffff"; font.bold: true; font.pixelSize: 12 }
         Timer { id: bannerTimer; interval: 3500; onTriggered: bannerFadeOut.start() }
         NumberAnimation { id: bannerFadeOut; target: statusBanner; property: "opacity"; to: 0; duration: 400 }
         function show(msg) { bannerText.text = msg; statusBanner.opacity = 1; bannerTimer.restart() }
     }
 
-    // 桌面端使用的 AI 筛选模态弹窗
+    // AI 筛选模态弹窗
     Dialog {
         id: aiModal
         anchors.centerIn: parent
-        width: Math.min(480, root.width - 32)
-        height: 340
-        modal: true
-        title: "✨ AI 智能初筛参数设置"
+        width: Math.min(480, root.width - 32); height: 340
+        modal: true; title: "✨ AI 智能初筛参数设置"
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
 
         property real progress: 0.0
         property string statusText: "准备就绪"
 
         ColumnLayout {
-            anchors.fill: parent
-            spacing: 12
-
+            anchors.fill: parent; spacing: 12
             Text { text: "选择智能剪辑模型策略："; color: "#cbd5e1"; font.pixelSize: 12 }
             ComboBox {
-                id: aiModeCombo
-                Layout.fillWidth: true
+                id: aiModeCombo; Layout.fillWidth: true
                 model: ["Apple 神经网络视觉审美优先 (保留好风光/抖动过滤)", "纯语音静音切分 (无声剔除)", "深度混合智能识别"]
             }
-
             Text { text: "导出画幅标准："; color: "#cbd5e1"; font.pixelSize: 12 }
             ComboBox {
-                id: canvasCombo
-                Layout.fillWidth: true
+                id: canvasCombo; Layout.fillWidth: true
                 model: ["3840×2160 16:9 横屏母带", "2160×3840 9:16 竖屏大片"]
             }
-
-            ProgressBar {
-                Layout.fillWidth: true
-                value: aiModal.progress / 100.0
-            }
-
-            Text {
-                text: aiModal.statusText
-                color: "#94a3b8"; font.pixelSize: 11
-                Layout.fillWidth: true; elide: Text.ElideMiddle
-            }
-
+            ProgressBar { Layout.fillWidth: true; value: aiModal.progress / 100.0 }
+            Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
             RowLayout {
                 Layout.fillWidth: true
-                Button {
-                    text: "取消任务"
-                    onClicked: bridge.cancelCurrentJob()
-                    background: Rectangle { color: "#334155"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
+                Button { text: "取消任务"; onClicked: bridge.cancelCurrentJob(); background: Rectangle { color: "#334155"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                 Item { Layout.fillWidth: true }
                 Button {
                     text: "开始 AI 自动初筛"
@@ -1488,51 +1510,28 @@ ApplicationWindow {
     Dialog {
         id: exportModal
         anchors.centerIn: parent
-        width: Math.min(520, root.width - 32)
-        height: 320
-        modal: true
-        title: "🚀 导出 4K 60fps 最终母带"
+        width: Math.min(520, root.width - 32); height: 320
+        modal: true; title: "🚀 导出 4K 60fps 最终母带"
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
 
         property real progress: 0.0
         property string statusText: "准备压制..."
 
         ColumnLayout {
-            anchors.fill: parent
-            spacing: 12
-
+            anchors.fill: parent; spacing: 12
             Text {
                 text: "✨ 规范：HEVC Main 10 (p010le) · BT.2020 · ARIB STD-B67 (HLG) · 65Mbps\n100% 符合 YouTube / B站 原生 4K60 HDR 审核标准！"
-                color: "#38bdf8"
-                font.pixelSize: 12
-                lineHeight: 1.3
+                color: "#38bdf8"; font.pixelSize: 12; lineHeight: 1.3
             }
-
-            ProgressBar {
-                Layout.fillWidth: true
-                value: exportModal.progress / 100.0
-            }
-
-            Text {
-                text: exportModal.statusText
-                color: "#f1f5f9"; font.pixelSize: 12
-                Layout.fillWidth: true; elide: Text.ElideMiddle
-            }
-
+            ProgressBar { Layout.fillWidth: true; value: exportModal.progress / 100.0 }
+            Text { text: exportModal.statusText; color: "#f1f5f9"; font.pixelSize: 12; Layout.fillWidth: true; elide: Text.ElideMiddle }
             RowLayout {
                 Layout.fillWidth: true
-                Button {
-                    text: "中止导出"
-                    onClicked: bridge.cancelCurrentJob()
-                    background: Rectangle { color: "#ef4444"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
+                Button { text: "中止导出"; onClicked: bridge.cancelCurrentJob(); background: Rectangle { color: "#ef4444"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                 Item { Layout.fillWidth: true }
                 Button {
                     text: "开始硬件加速渲染"
-                    onClicked: {
-                        bridge.startExport(root.timelineClips, root.masterCanvas, root.targetColor)
-                    }
+                    onClicked: { bridge.startExport(root.timelineClips, root.masterCanvas, root.targetColor) }
                     background: Rectangle { color: "#2563eb"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
@@ -1540,13 +1539,31 @@ ApplicationWindow {
         }
     }
 
+    // 文件夹选择器
     FolderDialog {
         id: folderDialog
-        title: "选择 DJI 视频素材目录"
+        title: "选择包含视频素材的文件夹"
         onAccepted: {
             var path = folderDialog.selectedFolder.toString()
-            if (path.indexOf("file://") === 0) path = path.substring(7)
+            if (path.indexOf("file://") === 0) path = decodeURIComponent(path.substring(7))
             bridge.scanDirectory(path)
+        }
+    }
+
+    // 视频文件选择器 (支持多选)
+    FileDialog {
+        id: fileDialog
+        title: "选择特定视频文件 (支持按住 Cmd / Shift 多选)"
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["视频文件 (*.mp4 *.MP4 *.mov *.MOV *.mkv)", "所有文件 (*)"]
+        onAccepted: {
+            var paths = []
+            for (var i = 0; i < selectedFiles.length; i++) {
+                var u = selectedFiles[i].toString()
+                if (u.indexOf("file://") === 0) u = decodeURIComponent(u.substring(7))
+                paths.push(u)
+            }
+            bridge.importPaths(paths)
         }
     }
 }

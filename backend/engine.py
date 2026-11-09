@@ -98,29 +98,100 @@ def probe_file(filepath):
         return None
 
 
-class ScanWorker(QThread):
-    finished = Signal(list, list) # dates, media_list
+RECENT_CONFIG = os.path.expanduser("~/.cache/dji_editor_recent.json")
+
+def load_recent_dirs():
+    try:
+        if os.path.exists(RECENT_CONFIG):
+            with open(RECENT_CONFIG, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_recent_dir(d):
+    try:
+        cur = load_recent_dirs()
+        if d in cur:
+            cur.remove(d)
+        cur.insert(0, d)
+        cur = cur[:5]
+        with open(RECENT_CONFIG, "w", encoding="utf-8") as f:
+            json.dump(cur, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def find_dji_paths():
+    candidates = [DEFAULT_CARD_DIR]
+    for v in glob.glob('/Volumes/*'):
+        dcim = os.path.join(v, 'DCIM')
+        if os.path.exists(dcim):
+            for sub in glob.glob(os.path.join(dcim, '*')):
+                if os.path.isdir(sub):
+                    candidates.append(sub)
+    for c in candidates:
+        if os.path.exists(c) and (glob.glob(os.path.join(c, "*.MP4")) or glob.glob(os.path.join(c, "*.mp4"))):
+            return c
+    return ""
+
+
+class MediaImportWorker(QThread):
+    finished = Signal(list, list, str) # dates, media_list, source_label
     error = Signal(str)
 
-    def __init__(self, target_dir):
+    def __init__(self, targets):
         super().__init__()
-        self.target_dir = target_dir
+        self.targets = targets if isinstance(targets, list) else [targets]
 
     def run(self):
         try:
-            if not os.path.exists(self.target_dir):
-                self.error.emit(f"目录不存在: {self.target_dir}")
+            valid_exts = {'.mp4', '.mov', '.mkv', '.m4v'}
+            collected_files = []
+            dir_for_recent = None
+
+            for t in self.targets:
+                if not t:
+                    continue
+                if t.startswith('file://'):
+                    t = t[7:]
+                t = os.path.abspath(os.path.expanduser(t))
+
+                if os.path.isdir(t):
+                    if not dir_for_recent:
+                        dir_for_recent = t
+                    for root, _, files in os.walk(t):
+                        for f in files:
+                            ext = os.path.splitext(f)[1].lower()
+                            if ext in valid_exts and not f.startswith('.'):
+                                collected_files.append(os.path.join(root, f))
+                        if root != t and not any(k in root for k in ('DCIM', '100MEDIA', 'DJI')):
+                            break
+                elif os.path.isfile(t):
+                    ext = os.path.splitext(t)[1].lower()
+                    if ext in valid_exts and not os.path.basename(t).startswith('.'):
+                        collected_files.append(t)
+                        if not dir_for_recent:
+                            dir_for_recent = os.path.dirname(t)
+
+            collected_files = sorted(list(set(collected_files)))
+            if not collected_files:
+                self.error.emit("未找到可导入的有效视频文件（支持 .MP4 / .MOV）")
                 return
-            files = sorted(glob.glob(os.path.join(self.target_dir, "*.MP4")) + glob.glob(os.path.join(self.target_dir, "*.mp4")))
+
+            if dir_for_recent:
+                save_recent_dir(dir_for_recent)
+
             media_list = []
             dates_set = set()
-            for f in files:
+            for f in collected_files:
                 meta = probe_file(f)
                 if meta:
                     media_list.append(meta)
                     dates_set.add(meta["date"])
+
             dates = sorted(list(dates_set), reverse=True)
-            self.finished.emit(dates, media_list)
+            source_label = dir_for_recent if dir_for_recent else f"{len(media_list)} 个视频文件"
+            self.finished.emit(dates, media_list, source_label)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -385,7 +456,9 @@ class ExportWorker(QThread):
 
 class EditorBridge(QObject):
     # 状态与数据信号
-    mediaLoaded = Signal(list, list) # dates, mediaList
+    mediaLoaded = Signal(list, list, str) # dates, mediaList, sourceLabel
+    djiFound = Signal(str)
+    recentDirsLoaded = Signal(list)
     statusMessage = Signal(str)
     aiProgress = Signal(float, str)
     aiFinished = Signal(list)
@@ -413,11 +486,46 @@ class EditorBridge(QObject):
     @Slot(str)
     def scanDirectory(self, path=""):
         target = path.strip() if path.strip() else DEFAULT_CARD_DIR
-        self.statusMessage.emit(f"正在扫描: {target}")
-        self._scan_worker = ScanWorker(target)
-        self._scan_worker.finished.connect(self.mediaLoaded.emit)
+        self.importPaths([target])
+
+    @Slot(list)
+    def importPaths(self, paths):
+        if not paths:
+            return
+        clean_paths = []
+        for p in paths:
+            if not p:
+                continue
+            s = str(p)
+            if s.startswith('file://'):
+                s = s[7:]
+            clean_paths.append(s)
+        self.statusMessage.emit(f"正在导入 {len(clean_paths)} 项素材...")
+        if self._scan_worker and self._scan_worker.isRunning():
+            self._scan_worker.wait()
+        self._scan_worker = MediaImportWorker(clean_paths)
+        self._scan_worker.finished.connect(self._on_import_finished)
         self._scan_worker.error.connect(self.scanError.emit)
         self._scan_worker.start()
+
+    def _on_import_finished(self, dates, media_list, source_label):
+        self.mediaLoaded.emit(dates, media_list, source_label)
+        self.loadRecentDirs()
+        self.statusMessage.emit(f"已成功加载 {len(media_list)} 个素材 ({source_label})")
+
+    @Slot()
+    def detectDji(self):
+        found = find_dji_paths()
+        if found:
+            self.djiFound.emit(found)
+            self.statusMessage.emit(f"检测到已连接的 DJI 相机存储卡: {found}")
+        else:
+            self.djiFound.emit("")
+            self.statusMessage.emit("未检测到连接的 DJI 相机，可手动选择文件夹或视频")
+
+    @Slot()
+    def loadRecentDirs(self):
+        self.recentDirsLoaded.emit(load_recent_dirs())
 
     @Slot(list, list, str, float, str, str)
     def startAiScreening(self, media_pool, selected_paths, ai_mode, max_dur, master_canvas, target_color):
