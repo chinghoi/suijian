@@ -73,12 +73,20 @@
 
 可直接在 [GitHub Releases 页面](https://github.com/chinghoi/suijian/releases) 或 [Actions 构建产物](https://github.com/chinghoi/suijian/actions) 中下载最新版本。
 
-### 3. 源码运行
-```bash
-# 1. 安装依赖
-pip install -r requirements.txt
+### 3. 本地编译与源码运行
 
-# 2. 启动
+#### 原生 C++ 编译运行 (推荐 · 纯净轻量)
+```bash
+# 依赖: Qt 6 (Core, Gui, Quick, QuickControls2, Multimedia), CMake 3.20+, C++17
+cmake -B build
+cmake --build build -j
+./build/随剪.app/Contents/MacOS/随剪    # macOS
+./build/随剪                           # Linux
+```
+
+#### Python 解释运行
+```bash
+pip install -r requirements.txt
 python3 main.py
 ```
 
