@@ -49,7 +49,7 @@ jobs:
         run: |
           which ffmpeg || brew install ffmpeg
 
-      - name: Package macOS App & DMG
+      - name: Package macOS App & DMG (Slimmed & Stripped)
         if: matrix.build_type == 'macos'
         run: |
           pyinstaller --noconfirm --onedir --windowed --name "随剪" \
@@ -57,10 +57,49 @@ jobs:
             --add-data "qml:qml" \
             --add-data "backend:backend" \
             --add-data "assets:assets" \
+            --exclude-module PySide6.QtWebEngine \
+            --exclude-module PySide6.QtWebEngineCore \
+            --exclude-module PySide6.QtWebEngineWidgets \
+            --exclude-module PySide6.Qt3DCore \
+            --exclude-module PySide6.Qt3DRender \
+            --exclude-module PySide6.Qt3DInput \
+            --exclude-module PySide6.Qt3DLogic \
+            --exclude-module PySide6.Qt3DAnimation \
+            --exclude-module PySide6.Qt3DExtras \
+            --exclude-module PySide6.QtSql \
+            --exclude-module PySide6.QtTest \
+            --exclude-module PySide6.QtDesigner \
+            --exclude-module PySide6.QtPositioning \
+            --exclude-module PySide6.QtLocation \
+            --exclude-module PySide6.QtSensors \
+            --exclude-module PySide6.QtSerialPort \
+            --exclude-module PySide6.QtSerialBus \
+            --exclude-module PySide6.QtBluetooth \
+            --exclude-module PySide6.QtNfc \
+            --exclude-module PySide6.QtWebSockets \
+            --exclude-module PySide6.QtWebChannel \
+            --exclude-module PySide6.QtRemoteObjects \
+            --exclude-module PySide6.QtPdf \
+            --exclude-module PySide6.QtPdfWidgets \
+            --exclude-module PySide6.QtPrintSupport \
+            --exclude-module PySide6.QtHelp \
+            --exclude-module PySide6.QtUiTools \
+            --exclude-module PySide6.QtSpatialAudio \
+            --exclude-module PySide6.QtVirtualKeyboard \
+            --exclude-module PySide6.QtTextToSpeech \
+            --exclude-module PySide6.QtCharts \
+            --exclude-module PySide6.QtGraphs \
+            --exclude-module PySide6.QtDataVisualization \
+            --exclude-module tkinter \
+            --exclude-module unittest \
+            --exclude-module pydoc \
+            --strip \
             main.py
+          find dist/随剪.app -type f \( -name "*.dylib" -o -name "*.so" \) -exec strip -S {} + 2>/dev/null || true
+          strip -S dist/随剪.app/Contents/MacOS/随剪 2>/dev/null || true
           hdiutil create -volname "随剪" -srcfolder dist/随剪.app -ov -format UDZO SuiJian-macOS.dmg
 
-      - name: Package Windows EXE
+      - name: Package Windows EXE (Slimmed)
         if: matrix.build_type == 'windows'
         run: |
           pyinstaller --noconfirm --onedir --windowed --name "随剪" `
@@ -68,10 +107,46 @@ jobs:
             --add-data "qml;qml" `
             --add-data "backend;backend" `
             --add-data "assets;assets" `
+            --exclude-module PySide6.QtWebEngine `
+            --exclude-module PySide6.QtWebEngineCore `
+            --exclude-module PySide6.QtWebEngineWidgets `
+            --exclude-module PySide6.Qt3DCore `
+            --exclude-module PySide6.Qt3DRender `
+            --exclude-module PySide6.Qt3DInput `
+            --exclude-module PySide6.Qt3DLogic `
+            --exclude-module PySide6.Qt3DAnimation `
+            --exclude-module PySide6.Qt3DExtras `
+            --exclude-module PySide6.QtSql `
+            --exclude-module PySide6.QtTest `
+            --exclude-module PySide6.QtDesigner `
+            --exclude-module PySide6.QtPositioning `
+            --exclude-module PySide6.QtLocation `
+            --exclude-module PySide6.QtSensors `
+            --exclude-module PySide6.QtSerialPort `
+            --exclude-module PySide6.QtSerialBus `
+            --exclude-module PySide6.QtBluetooth `
+            --exclude-module PySide6.QtNfc `
+            --exclude-module PySide6.QtWebSockets `
+            --exclude-module PySide6.QtWebChannel `
+            --exclude-module PySide6.QtRemoteObjects `
+            --exclude-module PySide6.QtPdf `
+            --exclude-module PySide6.QtPdfWidgets `
+            --exclude-module PySide6.QtPrintSupport `
+            --exclude-module PySide6.QtHelp `
+            --exclude-module PySide6.QtUiTools `
+            --exclude-module PySide6.QtSpatialAudio `
+            --exclude-module PySide6.QtVirtualKeyboard `
+            --exclude-module PySide6.QtTextToSpeech `
+            --exclude-module PySide6.QtCharts `
+            --exclude-module PySide6.QtGraphs `
+            --exclude-module PySide6.QtDataVisualization `
+            --exclude-module tkinter `
+            --exclude-module unittest `
+            --exclude-module pydoc `
             main.py
           Compress-Archive -Path dist/随剪/* -DestinationPath SuiJian-Windows.zip
 
-      - name: Package Linux Binary
+      - name: Package Linux Binary (Slimmed & Stripped)
         if: matrix.build_type == 'linux'
         run: |
           pyinstaller --noconfirm --onedir --windowed --name "随剪" \
@@ -79,7 +154,46 @@ jobs:
             --add-data "qml:qml" \
             --add-data "backend:backend" \
             --add-data "assets:assets" \
+            --exclude-module PySide6.QtWebEngine \
+            --exclude-module PySide6.QtWebEngineCore \
+            --exclude-module PySide6.QtWebEngineWidgets \
+            --exclude-module PySide6.Qt3DCore \
+            --exclude-module PySide6.Qt3DRender \
+            --exclude-module PySide6.Qt3DInput \
+            --exclude-module PySide6.Qt3DLogic \
+            --exclude-module PySide6.Qt3DAnimation \
+            --exclude-module PySide6.Qt3DExtras \
+            --exclude-module PySide6.QtSql \
+            --exclude-module PySide6.QtTest \
+            --exclude-module PySide6.QtDesigner \
+            --exclude-module PySide6.QtPositioning \
+            --exclude-module PySide6.QtLocation \
+            --exclude-module PySide6.QtSensors \
+            --exclude-module PySide6.QtSerialPort \
+            --exclude-module PySide6.QtSerialBus \
+            --exclude-module PySide6.QtBluetooth \
+            --exclude-module PySide6.QtNfc \
+            --exclude-module PySide6.QtWebSockets \
+            --exclude-module PySide6.QtWebChannel \
+            --exclude-module PySide6.QtRemoteObjects \
+            --exclude-module PySide6.QtPdf \
+            --exclude-module PySide6.QtPdfWidgets \
+            --exclude-module PySide6.QtPrintSupport \
+            --exclude-module PySide6.QtHelp \
+            --exclude-module PySide6.QtUiTools \
+            --exclude-module PySide6.QtSpatialAudio \
+            --exclude-module PySide6.QtVirtualKeyboard \
+            --exclude-module PySide6.QtTextToSpeech \
+            --exclude-module PySide6.QtCharts \
+            --exclude-module PySide6.QtGraphs \
+            --exclude-module PySide6.QtDataVisualization \
+            --exclude-module tkinter \
+            --exclude-module unittest \
+            --exclude-module pydoc \
+            --strip \
             main.py
+          find dist/随剪 -type f -name "*.so*" -exec strip --strip-unneeded {} + 2>/dev/null || true
+          strip --strip-unneeded dist/随剪/随剪 2>/dev/null || true
           tar -czvf SuiJian-Linux.tar.gz -C dist/随剪 .
 
       - name: Upload Build Artifacts
@@ -87,3 +201,35 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_name }}
+
+  build-native-linux:
+    name: Native C++ Build (Ultra-Slim Linux ~30MB)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Qt 6 Development Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev qt6-declarative-dev libqt6multimedia6-dev cmake ninja-build libgl1-mesa-dev
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQT_NO_PACKAGE_VERSION_CHECK=TRUE
+
+      - name: Build Native Binary
+        run: |
+          cmake --build build --config Release
+          strip --strip-unneeded build/DJIEditor 2>/dev/null || true
+          mkdir -p dist-native
+          cp build/DJIEditor dist-native/随剪
+          tar -czvf SuiJian-Native-Linux-x64.tar.gz -C dist-native .
+
+      - name: Upload Native Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuiJian-Native-Linux-x64.tar.gz
+          path: SuiJian-Native-Linux-x64.tar.gz

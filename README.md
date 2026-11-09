@@ -46,6 +46,7 @@ GitHub Actions 云构建会自动随代码生成全平台独立运行包，可�
 * macOS: `SuiJian-macOS.dmg`
 * Windows: `SuiJian-Windows.zip` (解压后直接双击运行 `随剪.exe`)
 * Linux: `SuiJian-Linux.tar.gz`
+* Linux (原生 C++ 极致轻量版 · 约 30MB): `SuiJian-Native-Linux-x64.tar.gz`
 
 ### 移动端与平板 (Android / iOS)
 * 移动端流体布局与触控手势已完整实装，仓库内已包含完整的 Android 自适应图标与 iOS 资产；
