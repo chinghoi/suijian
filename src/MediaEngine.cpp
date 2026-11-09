@@ -311,7 +311,31 @@ void MediaEngine::cancelCurrentJob() {
 
 void MediaEngine::safeEjectDevice() {
     pauseAiScreening();
-    emit statusMessage("✅ 设备缓存已安全同步，随时可拔出相机补拍");
+    emit statusMessage("设备缓存已安全同步，随时可拔出相机补拍");
+}
+
+void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringList &selectedPaths, const QString &mode, double targetDurationSec, const QString &canvasMode, const QString &targetColor) {
+    Q_UNUSED(canvasMode);
+    Q_UNUSED(targetColor);
+    QVariantList effPaths;
+    if (selectedPaths.isEmpty()) {
+        for (const auto &item : mediaPool) {
+            effPaths.append(item.toMap().value("path").toString());
+        }
+    } else {
+        for (const auto &p : selectedPaths) {
+            effPaths.append(p);
+        }
+    }
+    startAiScreening(effPaths, static_cast<int>(targetDurationSec), mode);
+}
+
+void MediaEngine::startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor) {
+    Q_UNUSED(masterCanvas);
+    Q_UNUSED(targetColor);
+    QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    QString out = down + QString("/随剪_成片_%1.mp4").arg(QDateTime::currentDateTime().toString("MM月dd日_hhmm"));
+    startExport(out, "mp4", 3840, 2160, 60);
 }
 
 void MediaEngine::startExport(const QString &outputPath, const QString &format, int width, int height, int fps) {
@@ -335,6 +359,157 @@ void MediaEngine::startExport(const QString &outputPath, const QString &format, 
     }).detach();
 }
 
+void MediaEngine::exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath) {
+    QString ext = (formatType.toLower() == "csv") ? "csv" : "json";
+    QString out = outputPath;
+    if (out.isEmpty()) {
+        QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        out = down + QString("/随剪_元数据清单_%1.%2").arg(QDateTime::currentDateTime().toString("MM月dd日_hhmm")).arg(ext);
+    }
+
+    QFile file(out);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        emit statusMessage(QString("元数据导出失败，无法创建文件: %1").arg(out));
+        return;
+    }
+
+    if (ext == "csv") {
+        // UTF-8 BOM 以兼容 Excel / Numbers
+        file.write("\xEF\xBB\xBF");
+        QTextStream ts(&file);
+        ts << "镜头编号,源文件名,源文件路径,入点起点(秒),出点终点(秒),截取时长(秒),时长文本,真实拍摄朝向,10-Bit色彩,转录文本\n";
+        for (int i = 0; i < clips.size(); ++i) {
+            QVariantMap c = clips[i].toMap();
+            QString orientStr = (c.value("orient").toString() == "vertical") ? "竖屏 9:16" : "横屏 16:9";
+            QString colorStr = c.value("is_10bit").toBool() ? "10-Bit HDR (D-Log M)" : "8-Bit SDR";
+            QString txt = c.value("text").toString().replace("\"", "\"\"");
+            ts << QString("%1,\"%2\",\"%3\",%4,%5,%6,\"%7\",\"%8\",\"%9\",\"%10\"\n")
+                  .arg(i + 1)
+                  .arg(c.value("filename").toString())
+                  .arg(c.value("src").toString())
+                  .arg(c.value("start", 0.0).toDouble(), 0, 'f', 2)
+                  .arg(c.value("end", 0.0).toDouble(), 0, 'f', 2)
+                  .arg(c.value("dur", 0.0).toDouble(), 0, 'f', 2)
+                  .arg(c.value("dur_str").toString())
+                  .arg(orientStr)
+                  .arg(colorStr)
+                  .arg(txt);
+        }
+    } else {
+        QJsonObject rootObj;
+        rootObj["project"] = "随剪 SuiJian";
+        rootObj["export_time"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+        rootObj["clip_count"] = clips.size();
+
+        double totalDur = 0.0;
+        QJsonArray clipsArr;
+        for (int i = 0; i < clips.size(); ++i) {
+            QVariantMap c = clips[i].toMap();
+            double d = c.value("dur", 0.0).toDouble();
+            totalDur += d;
+
+            QJsonObject cObj;
+            cObj["index"] = i + 1;
+            cObj["filename"] = c.value("filename").toString();
+            cObj["src_path"] = c.value("src").toString();
+            cObj["in_point_sec"] = c.value("start", 0.0).toDouble();
+            cObj["out_point_sec"] = c.value("end", 0.0).toDouble();
+            cObj["cut_duration_sec"] = d;
+            cObj["duration_formatted"] = c.value("dur_str").toString();
+            cObj["orientation"] = c.value("orient").toString();
+            cObj["is_10bit_hdr"] = c.value("is_10bit").toBool();
+            cObj["transcript_text"] = c.value("text").toString();
+            clipsArr.append(cObj);
+        }
+        rootObj["total_duration_sec"] = totalDur;
+        rootObj["clips"] = clipsArr;
+
+        QJsonDocument doc(rootObj);
+        file.write(doc.toJson(QJsonDocument::Indented));
+    }
+    file.close();
+    emit statusMessage(QString("元数据清单已成功导出: %1").arg(out));
+}
+
+void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterCanvas, const QString &outputPath) {
+    QString out = outputPath;
+    if (out.isEmpty()) {
+        QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        out = down + QString("/随剪_剪辑工程_%1.fcpxml").arg(QDateTime::currentDateTime().toString("MM月dd日_hhmm"));
+    }
+
+    QFile file(out);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        emit statusMessage(QString("FCPXML 导出失败: %1").arg(out));
+        return;
+    }
+
+    bool isVert = (masterCanvas == "vertical");
+    QString w = isVert ? "2160" : "3840";
+    QString h = isVert ? "3840" : "2160";
+
+    QTextStream ts(&file);
+    ts << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+    ts << "<!DOCTYPE fcpxml>\n";
+    ts << "<fcpxml version=\"1.9\">\n";
+    ts << "  <resources>\n";
+    ts << QString("    <format id=\"r1\" name=\"FFVideoFormat%1x%2p5994\" frameDuration=\"1001/60000s\" width=\"%1\" height=\"%2\"/>\n").arg(w).arg(h);
+
+    QStringList knownAssets;
+    for (int i = 0; i < clips.size(); ++i) {
+        QVariantMap c = clips[i].toMap();
+        QString src = c.value("src").toString();
+        if (!knownAssets.contains(src)) {
+            knownAssets.append(src);
+            int aid = knownAssets.size() + 1;
+            double dur = c.value("dur", 10.0).toDouble();
+            ts << QString("    <asset id=\"r%1\" name=\"%2\" src=\"file://%3\" start=\"0s\" duration=\"%4s\" hasVideo=\"1\" hasAudio=\"1\" format=\"r1\"/>\n")
+                  .arg(aid)
+                  .arg(c.value("filename").toString())
+                  .arg(src)
+                  .arg(dur, 0, 'f', 3);
+        }
+    }
+    ts << "  </resources>\n";
+    ts << "  <library>\n";
+    ts << "    <event name=\"随剪智能粗剪工程\">\n";
+    ts << QString("      <project name=\"随剪_工程_%1\">\n").arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm"));
+
+    double totalSec = 0.0;
+    for (const auto &item : clips) totalSec += item.toMap().value("dur", 0.0).toDouble();
+
+    ts << QString("        <sequence format=\"r1\" duration=\"%1s\" tcStart=\"0s\" tcFormat=\"NDF\">\n").arg(totalSec, 0, 'f', 3);
+    ts << "          <spine>\n";
+
+    double offsetSec = 0.0;
+    for (int i = 0; i < clips.size(); ++i) {
+        QVariantMap c = clips[i].toMap();
+        QString src = c.value("src").toString();
+        int aid = knownAssets.indexOf(src) + 2;
+        double startSec = c.value("start", 0.0).toDouble();
+        double durSec = c.value("dur", 0.0).toDouble();
+
+        ts << QString("            <asset-clip ref=\"r%1\" name=\"镜头_%2_%3\" offset=\"%4s\" start=\"%5s\" duration=\"%6s\" format=\"r1\"/>\n")
+              .arg(aid)
+              .arg(i + 1)
+              .arg(c.value("filename").toString())
+              .arg(offsetSec, 0, 'f', 3)
+              .arg(startSec, 0, 'f', 3)
+              .arg(durSec, 0, 'f', 3);
+        offsetSec += durSec;
+    }
+
+    ts << "          </spine>\n";
+    ts << "        </sequence>\n";
+    ts << "      </project>\n";
+    ts << "    </event>\n";
+    ts << "  </library>\n";
+    ts << "</fcpxml>\n";
+
+    file.close();
+    emit statusMessage(QString("FCPXML 工程已导出: %1 (可直接在达芬奇或FCPX中导入)").arg(out));
+}
+
 void MediaEngine::generateSrt(const QVariantList &clips, const QString &outputPath) {
     QString out = outputPath;
     if (out.isEmpty()) {
@@ -344,7 +519,7 @@ void MediaEngine::generateSrt(const QVariantList &clips, const QString &outputPa
 
     QFile file(out);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        emit statusMessage("❌ 无法创建字幕文件");
+        emit statusMessage("无法创建字幕文件");
         return;
     }
 

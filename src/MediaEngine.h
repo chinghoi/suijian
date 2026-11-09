@@ -23,12 +23,16 @@ public slots:
     void loadRecentDirs();
     void scanDirectory(const QString &dirPath);
     void startAiScreening(const QVariantList &selectedPaths, int targetDurationSec, const QString &mode);
+    void startAiScreening(const QVariantList &mediaPool, const QStringList &selectedPaths, const QString &mode, double targetDurationSec, const QString &canvasMode, const QString &targetColor);
     void pauseAiScreening();
     void resumeAiScreening();
     void cancelCurrentJob();
     void safeEjectDevice();
     void startExport(const QString &outputPath, const QString &format, int width, int height, int fps);
+    void startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor);
     void generateSrt(const QVariantList &clips, const QString &outputPath);
+    void exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath);
+    void exportFcpxml(const QVariantList &clips, const QString &masterCanvas, const QString &outputPath);
 
 signals:
     void mediaLoaded(const QStringList &dates, const QVariantList &mediaList, const QString &sourceLabel);
@@ -48,6 +52,7 @@ signals:
     void usbDeviceRemoved(const QString &deviceName);
     void exportProgress(double percent, const QString &stepText);
     void exportFinished(const QString &outputPath);
+    void exportFailed(const QString &errorMessage);
 
 private:
     void checkDeviceHeartbeat();

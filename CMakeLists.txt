@@ -33,6 +33,7 @@ if (APPLE)
     set_target_properties(DJIEditor PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "随剪"
+        OUTPUT_NAME "随剪"
         MACOSX_BUNDLE_ICON_FILE "icon.icns"
     )
     set_source_files_properties(assets/icon.icns PROPERTIES
