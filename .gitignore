@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C++ Build & CMake
+build/
+bin/
+*.o
+*.obj
+*.dylib
+*.so
+*.dll
+
+# PyInstaller / Distribution
+dist/
+*.spec
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.log
