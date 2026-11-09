@@ -315,3 +315,66 @@ void MediaEngine::startExport(const QString &outputPath, const QString &format, 
         });
     }).detach();
 }
+
+void MediaEngine::generateSrt(const QVariantList &clips, const QString &outputPath) {
+    QString out = outputPath;
+    if (out.isEmpty()) {
+        QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        out = down + QString("/随剪_字幕_%1.srt").arg(QDateTime::currentDateTime().toString("MM月dd日_hhmm"));
+    }
+
+    QFile file(out);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        emit statusMessage("❌ 无法创建字幕文件");
+        return;
+    }
+
+    QTextStream ts(&file);
+    int idx = 1;
+    double accumulated = 0.0;
+
+    for (const auto &item : clips) {
+        QVariantMap clip = item.toMap();
+        double clipStart = clip.value("start", 0.0).toDouble();
+        double clipDur = clip.value("dur", 0.0).toDouble();
+        QVariantList subs = clip.value("subtitles").toList();
+
+        if (subs.isEmpty() && clip.contains("text")) {
+            QVariantMap s;
+            s["start"] = clipStart;
+            s["end"] = clipStart + clipDur;
+            s["text"] = clip.value("text");
+            subs.append(s);
+        }
+
+        for (const auto &sItem : subs) {
+            QVariantMap sub = sItem.toMap();
+            QString text = sub.value("text").toString().trimmed();
+            if (text.isEmpty()) continue;
+
+            double subStart = sub.value("start").toDouble() - clipStart;
+            double subEnd = sub.value("end").toDouble() - clipStart;
+            double absStart = accumulated + std::max(0.0, subStart);
+            double absEnd = accumulated + std::min(clipDur, subEnd);
+
+            auto formatTime = [](double s) {
+                int h = static_cast<int>(s) / 3600;
+                int m = (static_cast<int>(s) % 3600) / 60;
+                int sec = static_cast<int>(s) % 60;
+                int ms = static_cast<int>((s - static_cast<int>(s)) * 1000);
+                return QString("%1:%2:%3,%4")
+                    .arg(h, 2, 10, QChar('0'))
+                    .arg(m, 2, 10, QChar('0'))
+                    .arg(sec, 2, 10, QChar('0'))
+                    .arg(ms, 3, 10, QChar('0'));
+            };
+
+            ts << idx++ << "\n";
+            ts << formatTime(absStart) << " --> " << formatTime(absEnd) << "\n";
+            ts << text << "\n\n";
+        }
+        accumulated += clipDur;
+    }
+    file.close();
+    emit statusMessage(QString("字幕已导出: %1").arg(out));
+}

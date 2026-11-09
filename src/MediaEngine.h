@@ -28,6 +28,7 @@ public slots:
     void cancelCurrentJob();
     void safeEjectDevice();
     void startExport(const QString &outputPath, const QString &format, int width, int height, int fps);
+    void generateSrt(const QVariantList &clips, const QString &outputPath);
 
 signals:
     void mediaLoaded(const QStringList &dates, const QVariantList &mediaList, const QString &sourceLabel);
@@ -39,6 +40,7 @@ signals:
     void aiFinished(const QVariantList &tasks);
     void aiPaused(int completed, int total, const QString &reason);
     void aiResumed();
+    void speechSegmentsReady(const QString &videoPath, const QVariantList &segments);
     void deviceDisconnected(const QString &deviceName);
     void deviceReconnected(const QString &deviceName, const QVariantMap &diff);
     void exportProgress(double percent, const QString &stepText);

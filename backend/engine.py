@@ -9,6 +9,8 @@ import subprocess
 import threading
 from PySide6.QtCore import QObject, Signal, Slot, Property, QThread
 
+from backend.speech import run_speech_pipeline, generate_srt
+
 DEFAULT_CARD_DIR = "/Volumes/OsmoNano/DCIM/DJI_001"
 THUMB_CACHE_DIR = os.path.expanduser("~/.cache/sui_jian_thumbs")
 CACHE_DIR = os.path.expanduser("~/.cache/sui_jian")
@@ -346,6 +348,7 @@ class AiScreeningWorker(QThread):
     cancelled = Signal()
     paused = Signal(int, int, str) # completed, total, reason
     resumed = Signal()
+    speechSegmentsReady = Signal(str, list)  # video_path, annotated segments (含 filler/retake 标记)
 
     def __init__(self, media_pool, selected_paths, ai_mode, max_dur, master_canvas, target_color):
         super().__init__()
@@ -408,6 +411,23 @@ class AiScreeningWorker(QThread):
 
             self.progress.emit((idx / total) * 100.0, f"AI 智能筛选镜头 [{idx+1}/{total}]: {meta['filename']}")
             dur = meta["duration"]
+
+            # ===== 口播连贯识别模式 (mode "4") =====
+            if self.ai_mode == "4" and dur > 2.0:
+                def _speech_progress(pct, msg):
+                    overall = ((idx + pct) / total) * 100.0
+                    self.progress.emit(overall, msg)
+
+                speech_clips, annotated_segs = run_speech_pipeline(
+                    path, meta, progress_callback=_speech_progress
+                )
+                if speech_clips:
+                    self._tasks.extend(speech_clips)
+                    if annotated_segs:
+                        self.speechSegmentsReady.emit(path, annotated_segs)
+                    save_ai_checkpoint(self.selected_paths, idx + 1, self._tasks)
+                    continue
+                # 口播识别无结果则 fallback 到混合模式
 
             # 静止/抖动与语音切分逻辑
             voice_blocks = []
@@ -644,6 +664,7 @@ class EditorBridge(QObject):
     aiFinished = Signal(list)
     aiPaused = Signal(int, int, str)
     aiResumed = Signal()
+    speechSegmentsReady = Signal(str, list)  # video_path, annotated word segments
     deviceDisconnected = Signal(str)
     deviceReconnected = Signal(str, dict)
     checkpointDetected = Signal(int, int)
@@ -743,6 +764,7 @@ class EditorBridge(QObject):
         self._ai_worker.finished.connect(self.aiFinished.emit)
         self._ai_worker.paused.connect(self.aiPaused.emit)
         self._ai_worker.resumed.connect(self.aiResumed.emit)
+        self._ai_worker.speechSegmentsReady.connect(self.speechSegmentsReady.emit)
         self._ai_worker.start()
 
     @Slot()
@@ -790,3 +812,17 @@ class EditorBridge(QObject):
         if self._export_worker and self._export_worker.isRunning():
             self._export_worker.cancel()
         self.statusMessage.emit("任务已由用户主动取消")
+
+    @Slot(list, str)
+    def generateSrt(self, clips, output_path):
+        """从剪辑片段生成 SRT 字幕文件"""
+        try:
+            if not output_path:
+                output_path = os.path.join(
+                    os.path.expanduser("~/Downloads"),
+                    f"随剪_字幕_{datetime.datetime.now().strftime('%m月%d日_%H%M')}.srt"
+                )
+            generate_srt(clips, output_path)
+            self.statusMessage.emit(f"字幕已导出: {output_path}")
+        except Exception as e:
+            self.statusMessage.emit(f"字幕导出失败: {e}")

@@ -50,6 +50,10 @@ ApplicationWindow {
     property var missingPathsMap: ({})
     property var lastDiffReport: ({ missing: [], modified: [], new_count: 0 })
 
+    // 口播识别与字幕状态
+    property var speechAnnotations: ({})  // { videoPath: [annotated segments] }
+    property string currentSubtitleText: ""  // 当前播放位置的字幕文本
+
     function pushUndoState(actionName) {
         var snapshot = {
             action: actionName || "剪辑变动",
@@ -319,9 +323,30 @@ ApplicationWindow {
         audioOutput: AudioOutput {}
 
         onPositionChanged: {
-            if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
+            if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) {
+                root.currentSubtitleText = ""
+                return
+            }
             var curClip = timelineClips[activeClipIndex]
             var posSec = player.position / 1000.0
+
+            // 实时口播字幕匹配
+            if (curClip.subtitles && curClip.subtitles.length > 0) {
+                var foundSub = false
+                for (var s = 0; s < curClip.subtitles.length; s++) {
+                    var sub = curClip.subtitles[s]
+                    if (posSec >= sub.start && posSec <= sub.end) {
+                        root.currentSubtitleText = sub.text
+                        foundSub = true
+                        break
+                    }
+                }
+                if (!foundSub) root.currentSubtitleText = ""
+            } else if (curClip.text) {
+                root.currentSubtitleText = curClip.text
+            } else {
+                root.currentSubtitleText = ""
+            }
 
             if (posSec >= curClip.end) {
                 if (root.isContinuousPlay) {
@@ -449,6 +474,13 @@ ApplicationWindow {
         function onExportFailed(err) {
             exportModal.close()
             statusBanner.show("❌ 导出失败: " + err)
+        }
+
+        function onSpeechSegmentsReady(videoPath, segments) {
+            var annots = root.speechAnnotations
+            annots[videoPath] = segments
+            root.speechAnnotations = annots
+            statusBanner.show("口播识别完成: " + segments.length + " 个词段 (" + videoPath.split("/").pop() + ")")
         }
     }
 
@@ -688,6 +720,30 @@ ApplicationWindow {
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                 }
+
+                // 移动端实时字幕悬浮展示
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottomMargin: 10
+                    color: "#d90b1120"
+                    border.color: "#38bdf8"
+                    border.width: 1
+                    radius: 5
+                    visible: root.currentSubtitleText.length > 0
+                    width: Math.min(parent.width - 24, mobileSubText.implicitWidth + 20)
+                    height: mobileSubText.implicitHeight + 10
+
+                    Text {
+                        id: mobileSubText
+                        anchors.centerIn: parent
+                        text: root.currentSubtitleText
+                        color: "#ffffff"
+                        font.pixelSize: 12
+                        font.bold: true
+                        elide: Text.ElideRight
+                    }
+                }
             }
 
             // 移动端紧凑播放控制器栏
@@ -801,6 +857,20 @@ ApplicationWindow {
                                         Text { text: "#" + (index + 1); color: "#ffffff"; font.bold: true; font.pixelSize: 10 }
                                         Item { Layout.fillWidth: true }
                                         Text { text: modelData.dur_str; color: "#38bdf8"; font.bold: true; font.pixelSize: 10 }
+                                    }
+                                }
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom; anchors.bottomMargin: 4
+                                    anchors.left: parent.left; anchors.right: parent.right
+                                    anchors.margins: 4
+                                    height: 16; radius: 3; color: "#e60f172a"
+                                    visible: Boolean(modelData.text && modelData.text.length > 0)
+                                    Text {
+                                        anchors.fill: parent; anchors.margins: 2
+                                        text: modelData.text || ""
+                                        color: "#f8fafc"; font.pixelSize: 8
+                                        elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter
                                     }
                                 }
 
@@ -1070,6 +1140,17 @@ ApplicationWindow {
                     spacing: 12
 
                     Text { text: "✨ AI 一键智能剪辑策略："; color: "#ffffff"; font.bold: true; font.pixelSize: 13 }
+
+                    Button {
+                        text: "🗣️ 口播智能粗剪 (废句消除 / 连贯留声 / 生成字幕)"
+                        Layout.fillWidth: true; Layout.preferredHeight: 44
+                        onClicked: {
+                            bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "4", 35.0, "horizontal", "10bit")
+                            root.mobileTab = 0
+                        }
+                        background: Rectangle { color: "#065f46"; radius: 6; border.color: "#10b981" }
+                        contentItem: Text { text: parent.text; color: "#6ee7b7"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
 
                     Button {
                         text: "🏔️ 审美风景优先 (保留优质镜头/过滤抖动)"
@@ -1383,6 +1464,30 @@ ApplicationWindow {
                             anchors.fill: parent
                             fillMode: VideoOutput.PreserveAspectFit
                         }
+
+                        // 桌面大屏实时口播字幕悬浮框
+                        Rectangle {
+                            anchors.bottom: parent.bottom
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottomMargin: 24
+                            color: "#d90b1120"
+                            border.color: "#38bdf8"
+                            border.width: 1
+                            radius: 6
+                            visible: root.currentSubtitleText.length > 0
+                            width: Math.min(parent.width - 48, desktopSubText.implicitWidth + 32)
+                            height: desktopSubText.implicitHeight + 16
+
+                            Text {
+                                id: desktopSubText
+                                anchors.centerIn: parent
+                                text: root.currentSubtitleText
+                                color: "#ffffff"
+                                font.pixelSize: 15
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+                        }
                     }
 
                     // 监视器控制栏
@@ -1617,6 +1722,20 @@ ApplicationWindow {
                         }
 
                         Rectangle {
+                            anchors.bottom: parent.bottom; anchors.bottomMargin: 20
+                            anchors.left: parent.left; anchors.right: parent.right
+                            anchors.margins: 4
+                            height: 18; radius: 3; color: "#e60f172a"
+                            visible: Boolean(modelData.text && modelData.text.length > 0)
+                            Text {
+                                anchors.fill: parent; anchors.margins: 2
+                                text: modelData.text || ""
+                                color: "#f8fafc"; font.pixelSize: 9
+                                elide: Text.ElideRight; verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+
+                        Rectangle {
                             anchors.bottom: parent.bottom; anchors.left: parent.left; anchors.right: parent.right
                             height: 18; color: "#bb0f172a"
                             RowLayout {
@@ -1667,7 +1786,12 @@ ApplicationWindow {
             Text { text: "选择智能剪辑模型策略："; color: "#cbd5e1"; font.pixelSize: 12 }
             ComboBox {
                 id: aiModeCombo; Layout.fillWidth: true
-                model: ["Apple 神经网络视觉审美优先 (保留好风光/抖动过滤)", "纯语音静音切分 (无声剔除)", "深度混合智能识别"]
+                model: [
+                    "口播智能粗剪 (自动剔除废句重录 / 连贯保留 / 自动生成字幕)",
+                    "Apple 神经网络视觉审美优先 (保留好风光/抖动过滤)",
+                    "纯语音静音切分 (无声剔除)",
+                    "深度混合智能识别"
+                ]
             }
             Text { text: "导出画幅标准："; color: "#cbd5e1"; font.pixelSize: 12 }
             ComboBox {
@@ -1706,7 +1830,11 @@ ApplicationWindow {
                 Button {
                     text: "开始 / 续接初筛"
                     onClicked: {
-                        var mode = aiModeCombo.currentIndex === 0 ? "1" : (aiModeCombo.currentIndex === 1 ? "2" : "3")
+                        var mode = "4"
+                        if (aiModeCombo.currentIndex === 0) mode = "4"
+                        else if (aiModeCombo.currentIndex === 1) mode = "1"
+                        else if (aiModeCombo.currentIndex === 2) mode = "2"
+                        else if (aiModeCombo.currentIndex === 3) mode = "3"
                         var c = canvasCombo.currentIndex === 0 ? "horizontal" : "vertical"
                         bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, 35.0, c, "10bit")
                     }
@@ -1833,6 +1961,12 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Button { text: "中止导出"; onClicked: bridge.cancelCurrentJob(); background: Rectangle { color: "#ef4444"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                 Item { Layout.fillWidth: true }
+                Button {
+                    text: "📄 导出 SRT 字幕"
+                    onClicked: { bridge.generateSrt(root.timelineClips, "") }
+                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#38bdf8" }
+                    contentItem: Text { text: parent.text; color: "#38bdf8"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
                 Button {
                     text: "开始硬件加速渲染"
                     onClicked: { bridge.startExport(root.timelineClips, root.masterCanvas, root.targetColor) }
