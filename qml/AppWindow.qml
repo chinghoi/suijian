@@ -2271,9 +2271,54 @@ ApplicationWindow {
         id: aiModal
         anchors.centerIn: parent
         width: Math.min(520, root.width - 32)
-        height: Math.min(targetDurationCombo.currentIndex === 2 ? 515 : 435, root.height - 24)
-        modal: true; title: "AI 智能初筛参数设置"
+        height: Math.min(targetDurationCombo.currentIndex === 2 ? 525 : 445, root.height - 24)
+        modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
+
+        header: Rectangle {
+            color: "transparent"
+            height: 38
+            width: parent.width
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 12
+
+                Text {
+                    text: "AI 智能初筛参数设置"
+                    color: "#f1f5f9"
+                    font.bold: true
+                    font.pixelSize: 13
+                    Layout.fillWidth: true
+                }
+
+                Rectangle {
+                    width: 24
+                    height: 24
+                    radius: 12
+                    color: aiCloseArea.containsMouse ? "#334155" : "transparent"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        color: aiCloseArea.containsMouse ? "#ffffff" : "#94a3b8"
+                        font.pixelSize: 12
+                    }
+
+                    MouseArea {
+                        id: aiCloseArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            bridge.cancelCurrentJob()
+                            aiModal.close()
+                        }
+                    }
+                }
+            }
+        }
 
         Behavior on height { NumberAnimation { duration: 150 } }
 
@@ -2463,7 +2508,10 @@ ApplicationWindow {
 
                 Button {
                     text: "取消"
-                    onClicked: bridge.cancelCurrentJob()
+                    onClicked: {
+                        bridge.cancelCurrentJob()
+                        aiModal.close()
+                    }
                     background: Rectangle { color: "#334155"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
@@ -2673,9 +2721,54 @@ ApplicationWindow {
     Dialog {
         id: exportModal
         anchors.centerIn: parent
-        width: Math.min(540, root.width - 32); height: 420
-        modal: true; title: "导出 4K 60fps 最终母带"
+        width: Math.min(540, root.width - 32); height: 430
+        modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
+
+        header: Rectangle {
+            color: "transparent"
+            height: 38
+            width: parent.width
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 12
+
+                Text {
+                    text: "导出 4K 60fps 最终母带"
+                    color: "#f1f5f9"
+                    font.bold: true
+                    font.pixelSize: 13
+                    Layout.fillWidth: true
+                }
+
+                Rectangle {
+                    width: 24
+                    height: 24
+                    radius: 12
+                    color: exportCloseArea.containsMouse ? "#334155" : "transparent"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "✕"
+                        color: exportCloseArea.containsMouse ? "#ffffff" : "#94a3b8"
+                        font.pixelSize: 12
+                    }
+
+                    MouseArea {
+                        id: exportCloseArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            bridge.cancelCurrentJob()
+                            exportModal.close()
+                        }
+                    }
+                }
+            }
+        }
 
         property real progress: 0.0
         property string statusText: "准备压制..."
@@ -2718,9 +2811,12 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 Button {
-                    text: "中止导出"
-                    onClicked: bridge.cancelCurrentJob()
-                    background: Rectangle { color: "#ef4444"; radius: 4 }
+                    text: exportModal.progress > 0 && exportModal.progress < 100 ? "中止导出" : "取消"
+                    onClicked: {
+                        bridge.cancelCurrentJob()
+                        exportModal.close()
+                    }
+                    background: Rectangle { color: "#334155"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
                 Item { Layout.fillWidth: true }
