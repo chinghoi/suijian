@@ -31,6 +31,7 @@ ApplicationWindow {
     property var selectedPathsMap: ({})
     property int selectedCount: 0
     property string selectedDurationStr: "00:00"
+    property real selectedTotalSeconds: 0.0
     property string mediaViewMode: "grid" // "grid" | "list"
     property bool isImporting: false
     property int importCurrent: 0
@@ -237,9 +238,19 @@ ApplicationWindow {
             }
         }
         root.selectedCount = count
+        root.selectedTotalSeconds = totalSec
         var mins = Math.floor(totalSec / 60)
         var secs = Math.floor(totalSec % 60)
         root.selectedDurationStr = (mins < 10 ? "0" + mins : "" + mins) + ":" + (secs < 10 ? "0" + secs : "" + secs)
+    }
+
+    function getEffectiveTotalSeconds() {
+        if (root.selectedTotalSeconds > 0) return root.selectedTotalSeconds
+        var total = 0
+        for (var i = 0; i < root.mediaPool.length; i++) {
+            total += (root.mediaPool[i].duration || 0)
+        }
+        return total > 0 ? total : 0
     }
 
     function getSelectedCount() {
@@ -704,8 +715,8 @@ ApplicationWindow {
                         spacing: 4
                         Text {
                             text: root.isMobileMode
-                                  ? ("⏱️ " + root.formatDuration(root.totalMovieDuration))
-                                  : ("⏱️ 成片总长: " + root.formatDuration(root.totalMovieDuration) + " (" + root.timelineClips.length + " 段)")
+                                  ? ("成片总长: " + root.formatDuration(root.totalMovieDuration))
+                                  : ("成片总长: " + root.formatDuration(root.totalMovieDuration) + " (" + root.timelineClips.length + " 段)")
                             color: "#f1f5f9"
                             font.pixelSize: 11
                             font.bold: true
@@ -2259,15 +2270,23 @@ ApplicationWindow {
     Dialog {
         id: aiModal
         anchors.centerIn: parent
-        width: Math.min(500, root.width - 32); height: 350
+        width: Math.min(520, root.width - 32)
+        height: Math.min(targetDurationCombo.currentIndex === 2 ? 515 : 435, root.height - 24)
         modal: true; title: "AI 智能初筛参数设置"
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
+
+        Behavior on height { NumberAnimation { duration: 150 } }
 
         property real progress: 0.0
         property string statusText: "准备就绪"
 
+        onAboutToShow: {
+            aiCanvasCombo.currentIndex = root.masterCanvas === "vertical" ? 1 : 0
+        }
+
         ColumnLayout {
-            anchors.fill: parent; spacing: 12
+            anchors.fill: parent; spacing: 10
+
             Text { text: "选择智能剪辑模型策略："; color: "#cbd5e1"; font.pixelSize: 12 }
             ComboBox {
                 id: aiModeCombo; Layout.fillWidth: true
@@ -2278,17 +2297,166 @@ ApplicationWindow {
                     "纯语音静音切分 (基础粗切：仅切除无声与死寂停顿，保留有声片段)"
                 ]
             }
+
+            Text { text: "视频方向与成片画幅："; color: "#cbd5e1"; font.pixelSize: 12 }
+            ComboBox {
+                id: aiCanvasCombo
+                Layout.fillWidth: true
+                model: [
+                    "3840×2160 16:9 横屏母带 (YouTube / B站 / 电脑与电视大屏)",
+                    "2160×3840 9:16 竖屏大片 (抖音 / 视频号 / 小红书 / 移动端)"
+                ]
+                currentIndex: root.masterCanvas === "vertical" ? 1 : 0
+                onActivated: {
+                    root.masterCanvas = currentIndex === 1 ? "vertical" : "horizontal"
+                }
+            }
+
             Text { text: "目标成片节奏 / 期望时长："; color: "#cbd5e1"; font.pixelSize: 12 }
             ComboBox {
                 id: targetDurationCombo; Layout.fillWidth: true
                 model: [
                     "标准成片节奏 (约 3 ~ 5 分钟 · 完整呈现事件叙事与精彩空镜)",
                     "短视频快节奏 (约 1 ~ 2 分钟 · 仅提取最高光核心镜头与金句)",
-                    "宽松完整保留 (不限总时长 · 仅过滤废片与重复错句)"
+                    "宽松完整保留 (按比例保留 · 仅过滤废片与重复错句)"
                 ]
             }
+
+            // 百分比保留设置模块 (仅在选择“宽松完整保留”时展开显示)
+            Rectangle {
+                visible: targetDurationCombo.currentIndex === 2
+                Layout.fillWidth: true
+                Layout.preferredHeight: 82
+                color: "#181a24"
+                border.color: "#2a2f42"
+                radius: 6
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { text: "保留总时长比例："; color: "#94a3b8"; font.pixelSize: 11 }
+                        Text { text: Math.round(retentionSlider.value) + "%"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
+                        Item { Layout.fillWidth: true }
+                        RowLayout {
+                            spacing: 4
+                            Repeater {
+                                model: [
+                                    { label: "30%", val: 30 },
+                                    { label: "50%", val: 50 },
+                                    { label: "75%", val: 75 },
+                                    { label: "100% 全部", val: 100 }
+                                ]
+                                delegate: Rectangle {
+                                    height: 20
+                                    width: pillText.implicitWidth + 12
+                                    radius: 3
+                                    color: Math.round(retentionSlider.value) === modelData.val ? "#2563eb" : "#222533"
+                                    border.color: Math.round(retentionSlider.value) === modelData.val ? "#3b82f6" : "#334155"
+
+                                    Text {
+                                        id: pillText
+                                        anchors.centerIn: parent
+                                        text: modelData.label
+                                        color: Math.round(retentionSlider.value) === modelData.val ? "#ffffff" : "#94a3b8"
+                                        font.pixelSize: 10
+                                        font.bold: Math.round(retentionSlider.value) === modelData.val
+                                    }
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: retentionSlider.value = modelData.val
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Item {
+                        id: retentionSlider
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 22
+                        property real from: 10
+                        property real to: 100
+                        property real stepSize: 5
+                        property real value: 100
+
+                        Rectangle {
+                            id: track
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            height: 6
+                            radius: 3
+                            color: "#2a2f42"
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                width: Math.max(0, Math.min(parent.width, (retentionSlider.value - retentionSlider.from) / (retentionSlider.to - retentionSlider.from) * parent.width))
+                                radius: 3
+                                color: "#3b82f6"
+                            }
+                        }
+
+                        Rectangle {
+                            id: handle
+                            width: 16
+                            height: 16
+                            radius: 8
+                            color: sliderArea.pressed ? "#60a5fa" : "#3b82f6"
+                            border.color: "#ffffff"
+                            border.width: 2
+                            anchors.verticalCenter: track.verticalCenter
+                            x: Math.max(0, Math.min(retentionSlider.width - width, (retentionSlider.value - retentionSlider.from) / (retentionSlider.to - retentionSlider.from) * (retentionSlider.width - width)))
+                        }
+
+                        MouseArea {
+                            id: sliderArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+
+                            function updateVal(mouseX) {
+                                var ratio = Math.max(0, Math.min(1.0, mouseX / retentionSlider.width))
+                                var raw = retentionSlider.from + ratio * (retentionSlider.to - retentionSlider.from)
+                                var stepped = Math.round(raw / retentionSlider.stepSize) * retentionSlider.stepSize
+                                retentionSlider.value = Math.max(retentionSlider.from, Math.min(retentionSlider.to, stepped))
+                            }
+
+                            onPressed: function(mouse) { updateVal(mouse.x) }
+                            onPositionChanged: function(mouse) { if (pressed) updateVal(mouse.x) }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { text: "预计成片时长："; color: "#94a3b8"; font.pixelSize: 11 }
+                        Text {
+                            property real effSec: root.getEffectiveTotalSeconds()
+                            property real calcDur: Math.max(5.0, effSec * retentionSlider.value / 100.0)
+                            text: (effSec <= 0)
+                                  ? "请先选择或导入视频素材"
+                                  : ((retentionSlider.value >= 100)
+                                      ? ("100% 完整保留有效镜头 (约 " + root.formatDuration(effSec) + ")")
+                                      : ("约 " + root.formatDuration(calcDur) + " · 压缩比 " + Math.round(retentionSlider.value) + "% (原素材总长 " + root.formatDuration(effSec) + ")"))
+                            color: "#34d399"
+                            font.bold: true
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+            }
+
             ProgressBar { Layout.fillWidth: true; value: aiModal.progress / 100.0 }
             Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
+
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
@@ -2326,11 +2494,23 @@ ApplicationWindow {
                         else if (aiModeCombo.currentIndex === 3) mode = "2"
 
                         var maxDur = 240.0
-                        if (targetDurationCombo.currentIndex === 0) maxDur = 240.0
-                        else if (targetDurationCombo.currentIndex === 1) maxDur = 90.0
-                        else if (targetDurationCombo.currentIndex === 2) maxDur = 0.0
+                        if (targetDurationCombo.currentIndex === 0) {
+                            maxDur = 240.0
+                        } else if (targetDurationCombo.currentIndex === 1) {
+                            maxDur = 90.0
+                        } else if (targetDurationCombo.currentIndex === 2) {
+                            if (retentionSlider.value >= 100) {
+                                maxDur = 0.0
+                            } else {
+                                var baseSec = root.getEffectiveTotalSeconds()
+                                maxDur = Math.max(10.0, baseSec * (retentionSlider.value / 100.0))
+                            }
+                        }
 
-                        bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, root.masterCanvas, root.targetColor)
+                        var canvasMode = aiCanvasCombo.currentIndex === 1 ? "vertical" : "horizontal"
+                        root.masterCanvas = canvasMode
+
+                        bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
                     }
                     background: Rectangle { color: "#4f46e5"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
