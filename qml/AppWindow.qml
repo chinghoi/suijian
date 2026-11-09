@@ -39,9 +39,13 @@ ApplicationWindow {
     property string importFilename: ""
 
     property var timelineClips: []
-    property int activeClipIndex: 0
+    property int activeClipIndex: -1
     property bool isContinuousPlay: true
     property bool isTheaterMode: false
+
+    // 监视器工作模式 ("idle": 待机无媒体 | "preview": 素材源片独立预览 | "timeline": 时间线成片播放)
+    property string monitorMode: "idle"
+    property var previewItem: null
 
     property string masterCanvas: "horizontal"
     property string targetColor: "10bit"
@@ -143,6 +147,10 @@ ApplicationWindow {
             root.loadActiveClip(root.activeClipIndex, false)
         } else {
             player.stop()
+            player.source = ""
+            root.activeClipIndex = -1
+            root.monitorMode = "idle"
+            root.previewItem = null
         }
         reconciliationDialog.close()
         statusBanner.show("已清理 " + removedCount + " 个源素材丢失的失效片段")
@@ -311,6 +319,8 @@ ApplicationWindow {
     function loadActiveClip(index, autoPlay) {
         if (index < 0 || index >= timelineClips.length) return
         activeClipIndex = index
+        root.monitorMode = "timeline"
+        root.previewItem = null
         var clip = timelineClips[index]
         player.stop()
         player.source = "file://" + clip.src
@@ -318,6 +328,52 @@ ApplicationWindow {
         if (autoPlay) {
             player.play()
         }
+    }
+
+    function startMediaPreview(m) {
+        if (!m || !m.path) return
+        player.stop()
+        root.monitorMode = "preview"
+        root.previewItem = m
+        player.source = "file://" + m.path
+        player.position = 0
+        player.play()
+        statusBanner.show("素材源片预览: " + m.filename)
+    }
+
+    function stopMediaPreview() {
+        player.stop()
+        player.source = ""
+        root.previewItem = null
+        if (root.timelineClips.length > 0 && root.activeClipIndex >= 0 && root.activeClipIndex < root.timelineClips.length) {
+            root.loadActiveClip(root.activeClipIndex, false)
+        } else {
+            root.activeClipIndex = -1
+            root.monitorMode = "idle"
+        }
+    }
+
+    function appendSingleMediaToTimeline(m) {
+        if (!m) return
+        pushUndoState("添加单个素材至时间线")
+        var newClips = root.timelineClips.slice()
+        newClips.push({
+            "src": m.path,
+            "filename": m.filename,
+            "start": 0.0,
+            "end": m.duration,
+            "dur": m.duration,
+            "dur_str": m.duration_str,
+            "orient": m.orient,
+            "is_10bit": m.is_10bit,
+            "thumb": m.thumb,
+            "transpose": m.transpose,
+            "text": "",
+            "subtitles": []
+        })
+        root.timelineClips = newClips
+        root.loadActiveClip(newClips.length - 1, false)
+        statusBanner.show("已将 [" + m.filename + "] 加入时间线")
     }
 
     function stepActiveIn(delta) {
@@ -397,6 +453,10 @@ ApplicationWindow {
             loadActiveClip(activeClipIndex, false)
         } else {
             player.stop()
+            player.source = ""
+            root.activeClipIndex = -1
+            root.monitorMode = "idle"
+            root.previewItem = null
         }
         statusBanner.show("已从时间线删除该片段")
     }
@@ -419,44 +479,55 @@ ApplicationWindow {
         audioOutput: AudioOutput {}
 
         onPositionChanged: {
-            if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) {
-                root.currentSubtitleText = ""
-                return
-            }
-            var curClip = timelineClips[activeClipIndex]
-            var posSec = player.position / 1000.0
-
-            // 实时口播字幕匹配
-            if (curClip.subtitles && curClip.subtitles.length > 0) {
-                var foundSub = false
-                for (var s = 0; s < curClip.subtitles.length; s++) {
-                    var sub = curClip.subtitles[s]
-                    if (posSec >= sub.start && posSec <= sub.end) {
-                        root.currentSubtitleText = sub.text
-                        foundSub = true
-                        break
-                    }
+            if (root.monitorMode === "timeline") {
+                if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) {
+                    root.currentSubtitleText = ""
+                    return
                 }
-                if (!foundSub) root.currentSubtitleText = ""
-            } else if (curClip.text) {
-                root.currentSubtitleText = curClip.text
-            } else {
-                root.currentSubtitleText = ""
-            }
+                var curClip = timelineClips[activeClipIndex]
+                var posSec = player.position / 1000.0
 
-            if (posSec >= curClip.end) {
-                if (root.isContinuousPlay) {
-                    if (activeClipIndex + 1 < timelineClips.length) {
-                        root.loadActiveClip(activeClipIndex + 1, true)
+                // 实时口播字幕匹配
+                if (curClip.subtitles && curClip.subtitles.length > 0) {
+                    var foundSub = false
+                    for (var s = 0; s < curClip.subtitles.length; s++) {
+                        var sub = curClip.subtitles[s]
+                        if (posSec >= sub.start && posSec <= sub.end) {
+                            root.currentSubtitleText = sub.text
+                            foundSub = true
+                            break
+                        }
+                    }
+                    if (!foundSub) root.currentSubtitleText = ""
+                } else if (curClip.text) {
+                    root.currentSubtitleText = curClip.text
+                } else {
+                    root.currentSubtitleText = ""
+                }
+
+                if (posSec >= curClip.end) {
+                    if (root.isContinuousPlay) {
+                        if (activeClipIndex + 1 < timelineClips.length) {
+                            root.loadActiveClip(activeClipIndex + 1, true)
+                        } else {
+                            player.pause()
+                            player.position = Math.floor(curClip.start * 1000)
+                        }
                     } else {
-                        player.pause()
                         player.position = Math.floor(curClip.start * 1000)
                     }
-                } else {
+                } else if (posSec < curClip.start) {
                     player.position = Math.floor(curClip.start * 1000)
                 }
-            } else if (posSec < curClip.start) {
-                player.position = Math.floor(curClip.start * 1000)
+            } else if (root.monitorMode === "preview") {
+                root.currentSubtitleText = ""
+                // 源片独立预览模式：播放到末尾自动重置至开头暂停
+                if (player.duration > 0 && player.position >= player.duration - 250) {
+                    player.pause()
+                    player.position = 0
+                }
+            } else {
+                root.currentSubtitleText = ""
             }
         }
     }
@@ -488,11 +559,13 @@ ApplicationWindow {
             root.selectedPathsMap = initSel
             root.recalcSelectionStats()
 
-            // 如果已有素材且时间线为空，自动加载第一个预览
-            if (list.length > 0 && root.timelineClips.length === 0) {
+            // 载入素材后监视器默认保持待机，用户点击预览或添加时间线时才唤醒
+            if (root.timelineClips.length === 0) {
                 player.stop()
-                player.source = "file://" + list[0].path
-                player.position = 0
+                player.source = ""
+                root.activeClipIndex = -1
+                root.monitorMode = "idle"
+                root.previewItem = null
             }
             statusBanner.show("成功载入 " + list.length + " 个素材 (" + root.currentSourceLabel + ")")
         }
@@ -543,6 +616,11 @@ ApplicationWindow {
                 root.loadActiveClip(0, false)
                 statusBanner.show("AI 自动筛选完成，共剪辑出 " + tasks.length + " 段精彩镜头！")
             } else {
+                player.stop()
+                player.source = ""
+                root.activeClipIndex = -1
+                root.monitorMode = "idle"
+                root.previewItem = null
                 statusBanner.show("未筛选到片段，请检查筛选参数")
             }
         }
@@ -879,37 +957,55 @@ ApplicationWindow {
 
                     Button {
                         text: "-1s"; Layout.preferredWidth: 38; Layout.preferredHeight: 28
+                        enabled: root.monitorMode !== "idle"
+                        opacity: enabled ? 1.0 : 0.35
                         onClicked: player.position = Math.max(0, player.position - 1000)
                         background: Rectangle { color: "#222533"; radius: 4 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
 
                     Button {
-                        text: player.playbackState === MediaPlayer.PlayingState ? "⏸" : "▶"
-                        Layout.preferredWidth: 44; Layout.preferredHeight: 28
+                        enabled: root.monitorMode !== "idle"
+                        opacity: enabled ? 1.0 : 0.35
+                        text: player.playbackState === MediaPlayer.PlayingState ? "暂停" : "播放"
+                        Layout.preferredWidth: 48; Layout.preferredHeight: 28
                         onClicked: {
                             if (player.playbackState === MediaPlayer.PlayingState) player.pause()
                             else player.play()
                         }
-                        background: Rectangle { color: "#3b82f6"; radius: 4 }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { color: parent.enabled ? "#3b82f6" : "#222533"; radius: 4 }
+                        contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
 
                     Button {
                         text: "+1s"; Layout.preferredWidth: 38; Layout.preferredHeight: 28
+                        enabled: root.monitorMode !== "idle"
+                        opacity: enabled ? 1.0 : 0.35
                         onClicked: player.position = player.position + 1000
                         background: Rectangle { color: "#222533"; radius: 4 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
 
                     Text {
-                        text: root.formatTime(player.position / 1000.0) + " / " + root.formatTime(root.totalMovieDuration)
-                        color: "#38bdf8"; font.bold: true; font.pixelSize: 11
+                        font.bold: true; font.pixelSize: 11
+                        color: root.monitorMode === "idle" ? "#64748b" : (root.monitorMode === "preview" ? "#38bdf8" : "#a78bfa")
+                        text: {
+                            if (root.monitorMode === "idle") {
+                                return "00:00 / 00:00 (待机)"
+                            } else if (root.monitorMode === "preview") {
+                                var curSec = player.position / 1000.0
+                                var totSec = (root.previewItem && root.previewItem.duration) ? root.previewItem.duration : (player.duration / 1000.0)
+                                return root.formatTime(curSec) + " / " + root.formatTime(totSec) + " (源片)"
+                            } else {
+                                return root.formatTime(player.position / 1000.0) + " / " + root.formatTime(root.totalMovieDuration)
+                            }
+                        }
                     }
 
                     Item { Layout.fillWidth: true }
 
                     Button {
+                        visible: root.monitorMode === "timeline" && root.timelineClips.length > 0
                         text: root.isContinuousPlay ? "连续" : "单段"
                         Layout.preferredHeight: 28
                         onClicked: root.isContinuousPlay = !root.isContinuousPlay
@@ -1052,9 +1148,12 @@ ApplicationWindow {
 
                     // 触控微调面板
                     Rectangle {
+                        id: mobInspectorPane
                         visible: root.timelineClips.length > 0
                         Layout.fillWidth: true; Layout.fillHeight: true
                         Layout.margins: 8; color: "#14151d"; radius: 8; border.color: "#222533"
+
+                        readonly property var curMobClip: (root.activeClipIndex >= 0 && root.timelineClips.length > root.activeClipIndex) ? root.timelineClips[root.activeClipIndex] : null
 
                         ColumnLayout {
                             anchors.fill: parent; anchors.margins: 8; spacing: 6
@@ -1062,29 +1161,29 @@ ApplicationWindow {
                             RowLayout {
                                 Layout.fillWidth: true
                                 Text { text: "起点 In:"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].start) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
+                                Text { text: mobInspectorPane.curMobClip ? root.formatTime(mobInspectorPane.curMobClip.start) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
                                 Item { Layout.fillWidth: true }
-                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveIn(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                             }
 
                             RowLayout {
                                 Layout.fillWidth: true
                                 Text { text: "终点 Out:"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Text { text: root.timelineClips.length > root.activeClipIndex ? root.formatTime(root.timelineClips[root.activeClipIndex].end) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
+                                Text { text: mobInspectorPane.curMobClip ? root.formatTime(mobInspectorPane.curMobClip.end) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
                                 Item { Layout.fillWidth: true }
-                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; onClicked: root.stepActiveOut(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                             }
 
                             RowLayout {
                                 Layout.fillWidth: true
-                                Text { text: "镜头: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].filename : "无"); color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Text { text: "截取: " + (root.timelineClips.length > root.activeClipIndex ? root.timelineClips[root.activeClipIndex].dur_str : "0s"); color: "#60a5fa"; font.bold: true; font.pixelSize: 11 }
+                                Text { text: "镜头: " + (mobInspectorPane.curMobClip ? mobInspectorPane.curMobClip.filename : "未选中"); color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                Text { text: "截取: " + (mobInspectorPane.curMobClip ? mobInspectorPane.curMobClip.dur_str : "0s"); color: "#60a5fa"; font.bold: true; font.pixelSize: 11 }
                             }
                         }
                     }
@@ -1256,9 +1355,10 @@ ApplicationWindow {
 
                         delegate: Rectangle {
                             width: mobileMediaList.width; height: 64; radius: 5
-                            color: root.selectedPathsMap[modelData.path] ? "#172033" : (mobRowMouse.containsMouse ? "#181a24" : "#14151d")
-                            border.color: root.selectedPathsMap[modelData.path] ? "#3b82f6" : (mobRowMouse.containsMouse ? "#475569" : "#1f222e")
-                            border.width: root.selectedPathsMap[modelData.path] ? 2 : 1
+                            readonly property bool isPreviewingThis: root.monitorMode === "preview" && root.previewItem && root.previewItem.path === modelData.path
+                            color: isPreviewingThis ? "#172554" : (root.selectedPathsMap[modelData.path] ? "#172033" : (mobRowMouse.containsMouse ? "#181a24" : "#14151d"))
+                            border.color: isPreviewingThis ? "#38bdf8" : (root.selectedPathsMap[modelData.path] ? "#3b82f6" : (mobRowMouse.containsMouse ? "#475569" : "#1f222e"))
+                            border.width: (isPreviewingThis || root.selectedPathsMap[modelData.path]) ? 2 : 1
 
                             RowLayout {
                                 anchors.fill: parent; anchors.margins: 6; spacing: 8
@@ -1284,8 +1384,21 @@ ApplicationWindow {
                                     Rectangle {
                                         anchors.centerIn: parent; width: 22; height: 22; radius: 11
                                         color: "#b3000000"; border.color: "#38bdf8"; border.width: 1
-                                        visible: mobRowMouse.containsMouse
+                                        visible: mobRowMouse.containsMouse && !isPreviewingThis
                                         Text { anchors.centerIn: parent; text: "▶"; color: "#38bdf8"; font.pixelSize: 9 }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            onClicked: (mouse) => {
+                                                root.startMediaPreview(modelData)
+                                                mouse.accepted = true
+                                            }
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible: isPreviewingThis
+                                        anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: 2
+                                        height: 14; width: mobPrevText.implicitWidth + 8; radius: 2; color: "#0284c7"
+                                        Text { id: mobPrevText; anchors.centerIn: parent; text: "正在预览"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
                                     }
                                 }
 
@@ -1309,12 +1422,7 @@ ApplicationWindow {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 onClicked: root.toggleItemSelection(modelData.path)
-                                onDoubleClicked: {
-                                    player.stop()
-                                    player.source = "file://" + modelData.path
-                                    player.position = 0
-                                    player.play()
-                                }
+                                onDoubleClicked: root.startMediaPreview(modelData)
                             }
                         }
                     }
@@ -1727,9 +1835,10 @@ ApplicationWindow {
                                     id: gridCard
                                     anchors.fill: parent; anchors.margins: 3
                                     radius: 6
-                                    color: root.selectedPathsMap[modelData.path] ? "#172033" : (cardMouse.containsMouse ? "#181a24" : "#12141c")
-                                    border.color: root.selectedPathsMap[modelData.path] ? "#3b82f6" : (cardMouse.containsMouse ? "#475569" : "#1f222e")
-                                    border.width: root.selectedPathsMap[modelData.path] ? 2 : 1
+                                    readonly property bool isPreviewingThis: root.monitorMode === "preview" && root.previewItem && root.previewItem.path === modelData.path
+                                    color: isPreviewingThis ? "#172554" : (root.selectedPathsMap[modelData.path] ? "#172033" : (cardMouse.containsMouse ? "#181a24" : "#12141c"))
+                                    border.color: isPreviewingThis ? "#38bdf8" : (root.selectedPathsMap[modelData.path] ? "#3b82f6" : (cardMouse.containsMouse ? "#475569" : "#1f222e"))
+                                    border.width: (isPreviewingThis || root.selectedPathsMap[modelData.path]) ? 2 : 1
 
                                     ColumnLayout {
                                         anchors.fill: parent; anchors.margins: 4; spacing: 4
@@ -1775,21 +1884,26 @@ ApplicationWindow {
                                                 Text { anchors.centerIn: parent; text: "10-Bit"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
                                             }
 
+                                            // 正在预览中徽标
+                                            Rectangle {
+                                                visible: gridCard.isPreviewingThis
+                                                anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: 4
+                                                height: 16; width: previewNoticeText.implicitWidth + 8; radius: 3; color: "#0284c7"
+                                                Text { id: previewNoticeText; anchors.centerIn: parent; text: "正在预览"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                            }
+
                                             // 悬浮预览按钮
                                             Rectangle {
                                                 anchors.centerIn: parent
                                                 width: 32; height: 32; radius: 16
                                                 color: "#b3000000"
                                                 border.color: "#38bdf8"; border.width: 1
-                                                visible: cardMouse.containsMouse
+                                                visible: cardMouse.containsMouse && !gridCard.isPreviewingThis
                                                 Text { anchors.centerIn: parent; text: "▶"; color: "#38bdf8"; font.pixelSize: 12 }
                                                 MouseArea {
                                                     anchors.fill: parent
                                                     onClicked: (mouse) => {
-                                                        player.stop()
-                                                        player.source = "file://" + modelData.path
-                                                        player.position = 0
-                                                        player.play()
+                                                        root.startMediaPreview(modelData)
                                                         mouse.accepted = true
                                                     }
                                                 }
@@ -1819,12 +1933,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         onClicked: root.toggleItemSelection(modelData.path)
-                                        onDoubleClicked: {
-                                            player.stop()
-                                            player.source = "file://" + modelData.path
-                                            player.position = 0
-                                            player.play()
-                                        }
+                                        onDoubleClicked: root.startMediaPreview(modelData)
                                     }
                                 }
                             }
@@ -1840,9 +1949,10 @@ ApplicationWindow {
 
                             delegate: Rectangle {
                                 width: desktopMediaListView.width; height: 64; radius: 5
-                                color: root.selectedPathsMap[modelData.path] ? "#172033" : (listMouse.containsMouse ? "#181a24" : "#14151d")
-                                border.color: root.selectedPathsMap[modelData.path] ? "#3b82f6" : (listMouse.containsMouse ? "#475569" : "#1f222e")
-                                border.width: root.selectedPathsMap[modelData.path] ? 2 : 1
+                                readonly property bool isPreviewingThis: root.monitorMode === "preview" && root.previewItem && root.previewItem.path === modelData.path
+                                color: isPreviewingThis ? "#172554" : (root.selectedPathsMap[modelData.path] ? "#172033" : (listMouse.containsMouse ? "#181a24" : "#14151d"))
+                                border.color: isPreviewingThis ? "#38bdf8" : (root.selectedPathsMap[modelData.path] ? "#3b82f6" : (listMouse.containsMouse ? "#475569" : "#1f222e"))
+                                border.width: (isPreviewingThis || root.selectedPathsMap[modelData.path]) ? 2 : 1
 
                                 RowLayout {
                                     anchors.fill: parent; anchors.margins: 6; spacing: 8
@@ -1869,15 +1979,37 @@ ApplicationWindow {
                                         Rectangle {
                                             anchors.centerIn: parent; width: 24; height: 24; radius: 12
                                             color: "#b3000000"; border.color: "#38bdf8"; border.width: 1
-                                            visible: listMouse.containsMouse
+                                            visible: listMouse.containsMouse && !isPreviewingThis
                                             Text { anchors.centerIn: parent; text: "▶"; color: "#38bdf8"; font.pixelSize: 10 }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                onClicked: (mouse) => {
+                                                    root.startMediaPreview(modelData)
+                                                    mouse.accepted = true
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            visible: isPreviewingThis
+                                            anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: 2
+                                            height: 14; width: listPrevText.implicitWidth + 8; radius: 2; color: "#0284c7"
+                                            Text { id: listPrevText; anchors.centerIn: parent; text: "正在预览"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
                                         }
                                     }
 
                                     // 信息列
                                     ColumnLayout {
                                         Layout.fillWidth: true; spacing: 2
-                                        Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                        RowLayout {
+                                            Layout.fillWidth: true; spacing: 4
+                                            Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                            Rectangle {
+                                                visible: isPreviewingThis
+                                                color: "#0369a1"; radius: 2
+                                                Layout.preferredHeight: 14; Layout.preferredWidth: 46
+                                                Text { anchors.centerIn: parent; text: "源片预览"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
+                                            }
+                                        }
                                         RowLayout {
                                             spacing: 6
                                             Text { text: modelData.duration_str; color: "#94a3b8"; font.pixelSize: 10 }
@@ -1896,12 +2028,7 @@ ApplicationWindow {
                                     anchors.fill: parent
                                     hoverEnabled: true
                                     onClicked: root.toggleItemSelection(modelData.path)
-                                    onDoubleClicked: {
-                                        player.stop()
-                                        player.source = "file://" + modelData.path
-                                        player.position = 0
-                                        player.play()
-                                    }
+                                    onDoubleClicked: root.startMediaPreview(modelData)
                                 }
                             }
                         }
@@ -1976,7 +2103,149 @@ ApplicationWindow {
                             fillMode: VideoOutput.PreserveAspectFit
                         }
 
-                        // 桌面大屏实时口播字幕悬浮框
+                        // 监视器待机空态蒙版
+                        Rectangle {
+                            anchors.fill: parent
+                            visible: root.monitorMode === "idle"
+                            color: "#07080c"
+
+                            ColumnLayout {
+                                anchors.centerIn: parent
+                                spacing: 10
+
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    width: 52; height: 52; radius: 26
+                                    color: "#12141c"
+                                    border.color: "#222533"; border.width: 1
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "▶"
+                                        color: "#475569"
+                                        font.pixelSize: 18
+                                    }
+                                }
+
+                                Text {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: "监视器待机"
+                                    color: "#94a3b8"
+                                    font.bold: true
+                                    font.pixelSize: 13
+                                }
+
+                                Text {
+                                    Layout.alignment: Qt.AlignHCenter
+                                    text: root.mediaPool.length > 0
+                                          ? "在左侧媒体池点击「预览」查看原始素材\n或点击「+ 加入时间线」/「AI 智能初筛」开始成片精剪"
+                                          : "请先在左侧载入视频素材"
+                                    color: "#64748b"
+                                    font.pixelSize: 11
+                                    horizontalAlignment: Text.AlignHCenter
+                                    lineHeight: 1.4
+                                }
+                            }
+                        }
+
+                        // 状态 A 浮层：素材源片独立预览顶栏
+                        Rectangle {
+                            anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+                            height: 38
+                            color: "#e60b1120"
+                            visible: root.monitorMode === "preview" && Boolean(root.previewItem)
+                            border.color: "#1e293b"; border.width: 1
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 14; anchors.rightMargin: 14
+                                spacing: 10
+
+                                Rectangle {
+                                    color: "#0284c7"; radius: 3
+                                    Layout.preferredHeight: 20
+                                    Layout.preferredWidth: previewTagText.implicitWidth + 12
+                                    Text {
+                                        id: previewTagText
+                                        anchors.centerIn: parent
+                                        text: "素材源片预览"
+                                        color: "#ffffff"; font.bold: true; font.pixelSize: 11
+                                    }
+                                }
+
+                                Text {
+                                    text: root.previewItem ? root.previewItem.filename : ""
+                                    color: "#f8fafc"; font.bold: true; font.pixelSize: 12
+                                    elide: Text.ElideMiddle
+                                    Layout.fillWidth: true
+                                }
+
+                                Text {
+                                    text: root.previewItem ? (root.previewItem.duration_str + " · " + root.previewItem.width + "×" + root.previewItem.height + (root.previewItem.is_10bit ? " 10-Bit" : " 8-Bit")) : ""
+                                    color: "#94a3b8"; font.pixelSize: 11
+                                }
+
+                                Button {
+                                    text: "+ 加入时间线"
+                                    onClicked: {
+                                        if (root.previewItem) {
+                                            root.appendSingleMediaToTimeline(root.previewItem)
+                                        }
+                                    }
+                                    background: Rectangle { color: "#2563eb"; radius: 4 }
+                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                }
+
+                                Rectangle {
+                                    width: 24; height: 24; radius: 12
+                                    color: closePrevArea.containsMouse ? "#334155" : "transparent"
+                                    Text { anchors.centerIn: parent; text: "✕"; color: closePrevArea.containsMouse ? "#ffffff" : "#94a3b8"; font.pixelSize: 12 }
+                                    MouseArea {
+                                        id: closePrevArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.stopMediaPreview()
+                                    }
+                                }
+                            }
+                        }
+
+                        // 状态 B 浮层：时间线成片导演播放顶栏
+                        Rectangle {
+                            anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+                            height: 34
+                            color: "#cc0f172a"
+                            visible: root.monitorMode === "timeline" && root.timelineClips.length > 0 && root.activeClipIndex >= 0 && root.activeClipIndex < root.timelineClips.length
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 14; anchors.rightMargin: 14
+                                spacing: 10
+
+                                Rectangle {
+                                    color: "#4f46e5"; radius: 3
+                                    Layout.preferredHeight: 18
+                                    Layout.preferredWidth: tlTagText.implicitWidth + 10
+                                    Text {
+                                        id: tlTagText
+                                        anchors.centerIn: parent
+                                        text: "时间线成片"
+                                        color: "#ffffff"; font.bold: true; font.pixelSize: 10
+                                    }
+                                }
+
+                                Text {
+                                    property var cur: (root.timelineClips.length > root.activeClipIndex && root.activeClipIndex >= 0) ? root.timelineClips[root.activeClipIndex] : null
+                                    text: cur ? ("镜头 " + (root.activeClipIndex + 1) + " / " + root.timelineClips.length + " · " + cur.filename + " (" + cur.dur_str + ")") : ""
+                                    color: "#f8fafc"; font.bold: true; font.pixelSize: 11
+                                    elide: Text.ElideMiddle
+                                    Layout.fillWidth: true
+                                }
+                            }
+                        }
+
+                        // 桌面大屏实时口播字幕悬浮框 (仅时间线模式且有字幕时展示)
                         Rectangle {
                             anchors.bottom: parent.bottom
                             anchors.horizontalCenter: parent.horizontalCenter
@@ -1985,7 +2254,7 @@ ApplicationWindow {
                             border.color: "#38bdf8"
                             border.width: 1
                             radius: 6
-                            visible: root.currentSubtitleText.length > 0
+                            visible: root.monitorMode === "timeline" && root.currentSubtitleText.length > 0
                             width: Math.min(parent.width - 48, desktopSubText.implicitWidth + 32)
                             height: desktopSubText.implicitHeight + 16
 
@@ -2010,35 +2279,59 @@ ApplicationWindow {
                             anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 12
 
                             Button {
-                                text: "-1s"; onClicked: player.position = Math.max(0, player.position - 1000)
+                                text: "-1s"
+                                enabled: root.monitorMode !== "idle"
+                                opacity: enabled ? 1.0 : 0.35
+                                onClicked: player.position = Math.max(0, player.position - 1000)
                                 background: Rectangle { color: "#222533"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
 
                             Button {
-                                text: player.playbackState === MediaPlayer.PlayingState ? "⏸ 暂停" : "▶ 播放"
+                                enabled: root.monitorMode !== "idle"
+                                opacity: enabled ? 1.0 : 0.35
+                                text: player.playbackState === MediaPlayer.PlayingState ? "暂停" : "播放"
                                 onClicked: {
                                     if (player.playbackState === MediaPlayer.PlayingState) player.pause()
                                     else player.play()
                                 }
-                                background: Rectangle { color: "#3b82f6"; radius: 4; Layout.preferredWidth: 64 }
+                                background: Rectangle { color: parent.enabled ? "#3b82f6" : "#222533"; radius: 4; Layout.preferredWidth: 64 }
                                 contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
 
                             Button {
-                                text: "+1s"; onClicked: player.position = player.position + 1000
+                                text: "+1s"
+                                enabled: root.monitorMode !== "idle"
+                                opacity: enabled ? 1.0 : 0.35
+                                onClicked: player.position = player.position + 1000
                                 background: Rectangle { color: "#222533"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                             }
 
                             Text {
-                                text: root.formatTime(player.position / 1000.0) + " / " + root.formatTime(root.totalMovieDuration) + " (镜头 #" + (root.activeClipIndex + 1) + ")"
-                                color: "#38bdf8"; font.bold: true; font.pixelSize: 12
+                                font.bold: true; font.pixelSize: 12
+                                color: root.monitorMode === "idle" ? "#64748b" : (root.monitorMode === "preview" ? "#38bdf8" : "#a78bfa")
+                                text: {
+                                    if (root.monitorMode === "idle") {
+                                        return "00:00.0 / 00:00.0 (未载入媒体)"
+                                    } else if (root.monitorMode === "preview") {
+                                        var curSec = player.position / 1000.0
+                                        var totSec = (root.previewItem && root.previewItem.duration) ? root.previewItem.duration : (player.duration / 1000.0)
+                                        return root.formatTime(curSec) + " / " + root.formatTime(totSec) + " (素材源片预览)"
+                                    } else {
+                                        var curPos = player.position / 1000.0
+                                        var curClip = (root.timelineClips.length > root.activeClipIndex && root.activeClipIndex >= 0) ? root.timelineClips[root.activeClipIndex] : null
+                                        var clipDurStr = curClip ? curClip.dur_str : "0s"
+                                        var clipIdxStr = "镜头 " + (root.activeClipIndex + 1) + "/" + root.timelineClips.length
+                                        return root.formatTime(curPos) + " (截取 " + clipDurStr + " · " + clipIdxStr + ") · 成片总长: " + root.formatDuration(root.totalMovieDuration)
+                                    }
+                                }
                             }
 
                             Item { Layout.fillWidth: true }
 
                             Button {
+                                visible: root.monitorMode === "timeline" && root.timelineClips.length > 0
                                 text: root.isContinuousPlay ? "连续播放成片" : "单镜头循环"
                                 onClicked: root.isContinuousPlay = !root.isContinuousPlay
                                 background: Rectangle { color: root.isContinuousPlay ? "#1d4ed8" : "#334155"; radius: 4 }
@@ -2083,7 +2376,7 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         Text {
-                            text: "镜头 #" + (root.activeClipIndex + 1)
+                            text: inspectorPane.currentActiveClip ? ("镜头 #" + (root.activeClipIndex + 1)) : "镜头属性"
                             color: "#ffffff"
                             font.bold: true
                             font.pixelSize: 15
@@ -2132,10 +2425,34 @@ ApplicationWindow {
 
                         GridLayout {
                             columns: 4; Layout.fillWidth: true; rowSpacing: 6; columnSpacing: 6
-                            Button { text: "-2s"; Layout.fillWidth: true; onClicked: root.stepActiveIn(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                            Button { text: "-0.5s"; Layout.fillWidth: true; onClicked: root.stepActiveIn(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                            Button { text: "+0.5s"; Layout.fillWidth: true; onClicked: root.stepActiveIn(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                            Button { text: "+2s"; Layout.fillWidth: true; onClicked: root.stepActiveIn(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                            Button {
+                                text: "-2s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveIn(-2.0)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "-0.5s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveIn(-0.5)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "+0.5s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveIn(0.5)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "+2s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveIn(2.0)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
                         }
                     }
 
@@ -2150,10 +2467,34 @@ ApplicationWindow {
 
                         GridLayout {
                             columns: 4; Layout.fillWidth: true; rowSpacing: 6; columnSpacing: 6
-                            Button { text: "-2s"; Layout.fillWidth: true; onClicked: root.stepActiveOut(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                            Button { text: "-0.5s"; Layout.fillWidth: true; onClicked: root.stepActiveOut(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                            Button { text: "+0.5s"; Layout.fillWidth: true; onClicked: root.stepActiveOut(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                            Button { text: "+2s"; Layout.fillWidth: true; onClicked: root.stepActiveOut(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                            Button {
+                                text: "-2s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveOut(-2.0)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "-0.5s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveOut(-0.5)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "+0.5s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveOut(0.5)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "+2s"; Layout.fillWidth: true
+                                enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                                onClicked: root.stepActiveOut(2.0)
+                                background: Rectangle { color: "#222533"; radius: 4 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
                         }
                     }
 
@@ -2166,20 +2507,23 @@ ApplicationWindow {
 
                     Button {
                         text: "在指针位置分割 (Split)"; Layout.fillWidth: true; Layout.preferredHeight: 38
+                        enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
                         onClicked: root.splitCurrentClip()
-                        background: Rectangle { color: "#854d0e"; radius: 6 }
+                        background: Rectangle { color: parent.enabled ? "#854d0e" : "#222533"; radius: 6 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                     Button {
                         text: "此镜头再加一段 (Duplicate)"; Layout.fillWidth: true; Layout.preferredHeight: 38
+                        enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
                         onClicked: root.duplicateCurrentClip()
-                        background: Rectangle { color: "#1e3a8a"; radius: 6 }
+                        background: Rectangle { color: parent.enabled ? "#1e3a8a" : "#222533"; radius: 6 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                     Button {
                         text: "从时间线删掉 (Delete)"; Layout.fillWidth: true; Layout.preferredHeight: 38
+                        enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
                         onClicked: root.deleteCurrentClip()
-                        background: Rectangle { color: "#7f1d1d"; radius: 6 }
+                        background: Rectangle { color: parent.enabled ? "#7f1d1d" : "#222533"; radius: 6 }
                         contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
 
