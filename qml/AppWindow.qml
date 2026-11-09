@@ -28,7 +28,14 @@ ApplicationWindow {
     property var mediaPool: []
     property var datesList: ["全部"]
     property string activeDate: "全部"
-    property var selectedPaths: ({})
+    property var selectedPathsMap: ({})
+    property int selectedCount: 0
+    property string selectedDurationStr: "00:00"
+    property string mediaViewMode: "grid" // "grid" | "list"
+    property bool isImporting: false
+    property int importCurrent: 0
+    property int importTotal: 0
+    property string importFilename: ""
 
     property var timelineClips: []
     property int activeClipIndex: 0
@@ -176,41 +183,118 @@ ApplicationWindow {
         return res
     }
 
-    function toggleSelectAllInActiveDate() {
-        var filtered = getFilteredMedia()
-        var allSelected = true
+    function toggleItemSelection(path) {
+        var newMap = Object.assign({}, root.selectedPathsMap)
+        if (newMap[path]) {
+            delete newMap[path]
+        } else {
+            newMap[path] = true
+        }
+        root.selectedPathsMap = newMap
+        root.recalcSelectionStats()
+    }
+
+    function selectAllInActiveFilter() {
+        var filtered = root.getFilteredMedia()
+        var newMap = Object.assign({}, root.selectedPathsMap)
         for (var i = 0; i < filtered.length; i++) {
-            if (!selectedPaths[filtered[i].path]) {
-                allSelected = false
-                break
+            newMap[filtered[i].path] = true
+        }
+        root.selectedPathsMap = newMap
+        root.recalcSelectionStats()
+    }
+
+    function clearAllInActiveFilter() {
+        var filtered = root.getFilteredMedia()
+        var newMap = Object.assign({}, root.selectedPathsMap)
+        for (var i = 0; i < filtered.length; i++) {
+            delete newMap[filtered[i].path]
+        }
+        root.selectedPathsMap = newMap
+        root.recalcSelectionStats()
+    }
+
+    function invertSelectionInActiveFilter() {
+        var filtered = root.getFilteredMedia()
+        var newMap = Object.assign({}, root.selectedPathsMap)
+        for (var i = 0; i < filtered.length; i++) {
+            var p = filtered[i].path
+            if (newMap[p]) delete newMap[p]
+            else newMap[p] = true
+        }
+        root.selectedPathsMap = newMap
+        root.recalcSelectionStats()
+    }
+
+    function recalcSelectionStats() {
+        var count = 0
+        var totalSec = 0
+        for (var i = 0; i < root.mediaPool.length; i++) {
+            var m = root.mediaPool[i]
+            if (root.selectedPathsMap[m.path]) {
+                count++
+                totalSec += (m.duration || 0)
             }
         }
-        var newSelected = Object.assign({}, selectedPaths)
-        for (var j = 0; j < filtered.length; j++) {
-            var p = filtered[j].path
-            if (allSelected) {
-                delete newSelected[p]
-            } else {
-                newSelected[p] = true
-            }
-        }
-        selectedPaths = newSelected
+        root.selectedCount = count
+        var mins = Math.floor(totalSec / 60)
+        var secs = Math.floor(totalSec % 60)
+        root.selectedDurationStr = (mins < 10 ? "0" + mins : "" + mins) + ":" + (secs < 10 ? "0" + secs : "" + secs)
     }
 
     function getSelectedCount() {
-        var count = 0
-        for (var k in selectedPaths) {
-            if (selectedPaths[k]) count++
-        }
-        return count
+        return root.selectedCount
     }
 
     function getSelectedPathsList() {
         var list = []
-        for (var k in selectedPaths) {
-            if (selectedPaths[k]) list.push(k)
+        for (var i = 0; i < root.mediaPool.length; i++) {
+            var p = root.mediaPool[i].path
+            if (root.selectedPathsMap[p]) list.push(p)
         }
         return list
+    }
+
+    function getSelectedList() {
+        var list = []
+        for (var i = 0; i < root.mediaPool.length; i++) {
+            if (root.selectedPathsMap[root.mediaPool[i].path]) {
+                list.push(root.mediaPool[i])
+            }
+        }
+        return list
+    }
+
+    function addSelectedToTimeline() {
+        var selected = root.getSelectedList()
+        if (selected.length === 0) {
+            statusBanner.show("请先勾选需要添加到时间线的视频素材")
+            return
+        }
+        pushUndoState("添加 " + selected.length + " 个素材至时间线")
+        var newClips = root.timelineClips.slice()
+        for (var i = 0; i < selected.length; i++) {
+            var m = selected[i]
+            newClips.push({
+                "src": m.path,
+                "filename": m.filename,
+                "start": 0.0,
+                "end": m.duration,
+                "dur": m.duration,
+                "dur_str": m.duration_str,
+                "orient": m.orient,
+                "is_10bit": m.is_10bit,
+                "thumb": m.thumb,
+                "transpose": m.transpose,
+                "text": "",
+                "subtitles": []
+            })
+        }
+        root.timelineClips = newClips
+        if (root.activeClipIndex < 0 && root.timelineClips.length > 0) {
+            root.loadActiveClip(0, false)
+        }
+        statusBanner.show("已将选中的 " + selected.length + " 个素材添加至时间线")
     }
 
     function loadActiveClip(index, autoPlay) {
@@ -370,7 +454,15 @@ ApplicationWindow {
     Connections {
         target: bridge
 
+        function onImportProgress(current, total, filename) {
+            root.isImporting = true
+            root.importCurrent = current
+            root.importTotal = total
+            root.importFilename = filename
+        }
+
         function onMediaLoaded(dates, list, sourceLabel) {
+            root.isImporting = false
             root.mediaPool = list
             root.currentSourceLabel = sourceLabel || "已加载"
             var d = ["全部"]
@@ -382,7 +474,8 @@ ApplicationWindow {
             for (var j = 0; j < list.length; j++) {
                 initSel[list[j].path] = true
             }
-            root.selectedPaths = initSel
+            root.selectedPathsMap = initSel
+            root.recalcSelectionStats()
 
             // 如果已有素材且时间线为空，自动加载第一个预览
             if (list.length > 0 && root.timelineClips.length === 0) {
@@ -409,6 +502,7 @@ ApplicationWindow {
         }
 
         function onScanError(err) {
+            root.isImporting = false
             statusBanner.show("提示: " + err)
         }
 
@@ -1066,24 +1160,63 @@ ApplicationWindow {
                         visible: root.mediaPool.length > 0
                         Layout.fillWidth: true; Layout.preferredHeight: 34
                         color: "#161822"
-                        RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
-                            Repeater {
-                                model: root.datesList
-                                delegate: Rectangle {
-                                    Layout.preferredHeight: 24; Layout.preferredWidth: 64; radius: 4
-                                    color: root.activeDate === modelData ? "#3b82f6" : "#222533"
-                                    Text { anchors.centerIn: parent; text: modelData; color: "#ffffff"; font.pixelSize: 10; font.bold: root.activeDate === modelData }
-                                    MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
+                        Flickable {
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
+                            contentWidth: mobDateRow.implicitWidth; boundsBehavior: Flickable.StopAtBounds
+                            RowLayout {
+                                id: mobDateRow; spacing: 6
+                                Repeater {
+                                    model: root.datesList
+                                    delegate: Rectangle {
+                                        Layout.preferredHeight: 24; Layout.preferredWidth: Math.max(58, mobDtText.implicitWidth + 12); radius: 4
+                                        color: root.activeDate === modelData ? "#2563eb" : "#222533"
+                                        Text {
+                                            id: mobDtText
+                                            anchors.centerIn: parent
+                                            text: modelData + (modelData === "全部" ? " (" + root.mediaPool.length + ")" : "")
+                                            color: "#ffffff"; font.pixelSize: 10; font.bold: root.activeDate === modelData
+                                        }
+                                        MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
+                                    }
                                 }
                             }
-                            Item { Layout.fillWidth: true }
+                        }
+                    }
+
+                    // 移动端快捷选择栏
+                    Rectangle {
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 32
+                        color: "#181a24"; border.color: "#1e2230"; border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
                             Button {
-                                text: "全选当前日期"
-                                Layout.preferredHeight: 24
-                                onClicked: root.toggleSelectAllInActiveDate()
-                                background: Rectangle { color: "#272a38"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                text: "全选"
+                                Layout.preferredHeight: 22
+                                onClicked: root.selectAllInActiveFilter()
+                                background: Rectangle { color: parent.hovered ? "#3b82f6" : "#272a38"; radius: 3 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "反选"
+                                Layout.preferredHeight: 22
+                                onClicked: root.invertSelectionInActiveFilter()
+                                background: Rectangle { color: parent.hovered ? "#334155" : "#272a38"; radius: 3 }
+                                contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Button {
+                                text: "清空"
+                                Layout.preferredHeight: 22
+                                onClicked: root.clearAllInActiveFilter()
+                                background: Rectangle { color: parent.hovered ? "#450a0a" : "#272a38"; radius: 3 }
+                                contentItem: Text { text: parent.text; color: "#fca5a5"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                text: "已选 " + root.selectedCount + " / " + root.getFilteredMedia().length
+                                color: root.selectedCount > 0 ? "#93c5fd" : "#64748b"
+                                font.pixelSize: 10; font.bold: true
                             }
                         }
                     }
@@ -1096,26 +1229,40 @@ ApplicationWindow {
                         clip: true; spacing: 4; model: root.getFilteredMedia()
 
                         delegate: Rectangle {
-                            width: mobileMediaList.width; height: 64
-                            color: root.selectedPaths[modelData.path] ? "#1e2436" : "#14151d"
-                            border.color: root.selectedPaths[modelData.path] ? "#3b82f6" : "#1f222e"
-                            border.width: 1
+                            width: mobileMediaList.width; height: 64; radius: 5
+                            color: root.selectedPathsMap[modelData.path] ? "#172033" : (mobRowMouse.containsMouse ? "#181a24" : "#14151d")
+                            border.color: root.selectedPathsMap[modelData.path] ? "#3b82f6" : (mobRowMouse.containsMouse ? "#475569" : "#1f222e")
+                            border.width: root.selectedPathsMap[modelData.path] ? 2 : 1
 
                             RowLayout {
                                 anchors.fill: parent; anchors.margins: 6; spacing: 8
-                                CheckBox {
-                                    checked: !!root.selectedPaths[modelData.path]
-                                    onToggled: {
-                                        var map = Object.assign({}, root.selectedPaths)
-                                        if (checked) map[modelData.path] = true
-                                        else delete map[modelData.path]
-                                        root.selectedPaths = map
+
+                                // 圆形勾选指示器
+                                Rectangle {
+                                    Layout.preferredWidth: 22; Layout.preferredHeight: 22; radius: 11
+                                    color: root.selectedPathsMap[modelData.path] ? "#2563eb" : "#80000000"
+                                    border.color: root.selectedPathsMap[modelData.path] ? "#ffffff" : "#94a3b8"
+                                    border.width: 1.5
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "✓"
+                                        visible: !!root.selectedPathsMap[modelData.path]
+                                        color: "#ffffff"; font.bold: true; font.pixelSize: 13
                                     }
                                 }
+
                                 Rectangle {
-                                    Layout.preferredWidth: 70; Layout.fillHeight: true; radius: 4; clip: true; color: "#000000"
+                                    Layout.preferredWidth: 74; Layout.fillHeight: true; radius: 4; clip: true; color: "#000000"
                                     Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop }
+                                    Rectangle {
+                                        anchors.centerIn: parent; width: 22; height: 22; radius: 11
+                                        color: "#b3000000"; border.color: "#38bdf8"; border.width: 1
+                                        visible: mobRowMouse.containsMouse
+                                        Text { anchors.centerIn: parent; text: "▶"; color: "#38bdf8"; font.pixelSize: 9 }
+                                    }
                                 }
+
                                 ColumnLayout {
                                     Layout.fillWidth: true; spacing: 2
                                     Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
@@ -1132,13 +1279,56 @@ ApplicationWindow {
                             }
 
                             MouseArea {
-                                anchors.fill: parent; propagateComposedEvents: true
-                                onClicked: (mouse) => {
+                                id: mobRowMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                onClicked: root.toggleItemSelection(modelData.path)
+                                onDoubleClicked: {
                                     player.stop()
                                     player.source = "file://" + modelData.path
                                     player.position = 0
                                     player.play()
-                                    mouse.accepted = false
+                                }
+                            }
+                        }
+                    }
+
+                    // 移动端底部操作条
+                    Rectangle {
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 44
+                        color: "#161822"; border.color: "#1f222e"; border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent; anchors.margins: 6; spacing: 6
+
+                            Button {
+                                Layout.fillWidth: true; Layout.preferredHeight: 32
+                                text: "+ 加到时间线"
+                                enabled: root.selectedCount > 0
+                                onClicked: root.addSelectedToTimeline()
+                                background: Rectangle {
+                                    color: root.selectedCount > 0 ? "#0f172a" : "#161922"
+                                    border.color: root.selectedCount > 0 ? "#38bdf8" : "#334155"
+                                    radius: 4
+                                }
+                                contentItem: Text {
+                                    text: parent.text; color: root.selectedCount > 0 ? "#38bdf8" : "#64748b"
+                                    font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true; Layout.preferredHeight: 32
+                                text: "AI 初筛 (" + root.selectedCount + ")"
+                                enabled: root.selectedCount > 0
+                                onClicked: aiModal.open()
+                                background: Rectangle {
+                                    color: root.selectedCount > 0 ? "#2563eb" : "#334155"; radius: 4
+                                }
+                                contentItem: Text {
+                                    text: parent.text; color: root.selectedCount > 0 ? "#ffffff" : "#64748b"
+                                    font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                                 }
                             }
                         }
@@ -1275,16 +1465,37 @@ ApplicationWindow {
                     // 仅在有素材时展示简洁顶栏与加号菜单 (空态时不重复堆叠按键)
                     Rectangle {
                         visible: root.mediaPool.length > 0
-                        Layout.fillWidth: true; Layout.preferredHeight: 38
+                        Layout.fillWidth: true; Layout.preferredHeight: 40
                         color: "#161822"; border.color: "#1f222e"; border.width: 1
 
                         RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
+                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 6
                             Text {
                                 text: "素材媒体池 (" + root.mediaPool.length + ")"
                                 color: "#ffffff"; font.bold: true; font.pixelSize: 12
                             }
                             Item { Layout.fillWidth: true }
+
+                            // 视图模式切换 (网格 / 列表)
+                            Rectangle {
+                                Layout.preferredHeight: 24; Layout.preferredWidth: 84; radius: 4; color: "#1e2230"
+                                RowLayout {
+                                    anchors.fill: parent; spacing: 0
+                                    Rectangle {
+                                        Layout.fillWidth: true; Layout.fillHeight: true; radius: 4
+                                        color: root.mediaViewMode === "grid" ? "#2563eb" : "transparent"
+                                        Text { anchors.centerIn: parent; text: "网格"; color: root.mediaViewMode === "grid" ? "#ffffff" : "#94a3b8"; font.pixelSize: 10; font.bold: true }
+                                        MouseArea { anchors.fill: parent; onClicked: root.mediaViewMode = "grid" }
+                                    }
+                                    Rectangle {
+                                        Layout.fillWidth: true; Layout.fillHeight: true; radius: 4
+                                        color: root.mediaViewMode === "list" ? "#2563eb" : "transparent"
+                                        Text { anchors.centerIn: parent; text: "列表"; color: root.mediaViewMode === "list" ? "#ffffff" : "#94a3b8"; font.pixelSize: 10; font.bold: true }
+                                        MouseArea { anchors.fill: parent; onClicked: root.mediaViewMode = "list" }
+                                    }
+                                }
+                            }
+
                             Button {
                                 text: "+ 导入 ▾"
                                 Layout.preferredHeight: 24
@@ -1298,6 +1509,26 @@ ApplicationWindow {
                                     MenuItem { text: "选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
                                     MenuItem { text: "重新检测相机卡"; onTriggered: bridge.detectDji() }
                                 }
+                            }
+                        }
+                    }
+
+                    // 极速并发解析动态进度指示条
+                    Rectangle {
+                        visible: root.isImporting
+                        Layout.fillWidth: true; Layout.preferredHeight: 34
+                        color: "#0f1f38"; border.color: "#38bdf8"; border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10; spacing: 8
+                            ProgressBar {
+                                Layout.preferredWidth: 80; Layout.preferredHeight: 6
+                                value: root.importTotal > 0 ? (root.importCurrent / root.importTotal) : 0.0
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: "正在多线程解析 [" + root.importCurrent + "/" + root.importTotal + "] " + root.importFilename
+                                color: "#93c5fd"; font.pixelSize: 10; elide: Text.ElideMiddle
                             }
                         }
                     }
@@ -1369,91 +1600,332 @@ ApplicationWindow {
                     // 日期过滤选项卡 (有素材时显示)
                     Rectangle {
                         visible: root.mediaPool.length > 0
-                        Layout.fillWidth: true; Layout.preferredHeight: 38
+                        Layout.fillWidth: true; Layout.preferredHeight: 36
                         color: "#161822"
-                        RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
-                            Repeater {
-                                model: root.datesList
-                                delegate: Rectangle {
-                                    Layout.preferredHeight: 24; Layout.preferredWidth: 68; radius: 4
-                                    color: root.activeDate === modelData ? "#3b82f6" : "#222533"
-                                    Text { anchors.centerIn: parent; text: modelData; color: "#ffffff"; font.pixelSize: 11; font.bold: root.activeDate === modelData }
-                                    MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
-                                }
-                            }
-                        }
-                    }
-
-                    // 全选与已选计数 (有素材时显示)
-                    Rectangle {
-                        visible: root.mediaPool.length > 0
-                        Layout.fillWidth: true; Layout.preferredHeight: 32
-                        color: "#181a24"
-                        RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 8
-                            Button {
-                                text: "全选当前日期素材"
-                                onClicked: root.toggleSelectAllInActiveDate()
-                                background: Rectangle { color: "#272a38"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-                            Item { Layout.fillWidth: true }
-                            Text { text: "已选 " + root.getSelectedCount() + " 个"; color: "#94a3b8"; font.pixelSize: 11 }
-                        }
-                    }
-
-                    // 素材列表 (有素材时显示)
-                    ListView {
-                        id: desktopMediaListView
-                        visible: root.mediaPool.length > 0
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        clip: true; model: root.getFilteredMedia(); spacing: 4
-
-                        delegate: Rectangle {
-                            width: desktopMediaListView.width; height: 68
-                            color: root.selectedPaths[modelData.path] ? "#1e2436" : "#14151d"
-                            border.color: root.selectedPaths[modelData.path] ? "#3b82f6" : "transparent"
-                            border.width: 1
-
+                        Flickable {
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8
+                            contentWidth: dateRow.implicitWidth; boundsBehavior: Flickable.StopAtBounds
                             RowLayout {
-                                anchors.fill: parent; anchors.margins: 6; spacing: 8
-                                CheckBox {
-                                    checked: !!root.selectedPaths[modelData.path]
-                                    onToggled: {
-                                        var map = Object.assign({}, root.selectedPaths)
-                                        if (checked) map[modelData.path] = true
-                                        else delete map[modelData.path]
-                                        root.selectedPaths = map
+                                id: dateRow; spacing: 6
+                                Repeater {
+                                    model: root.datesList
+                                    delegate: Rectangle {
+                                        Layout.preferredHeight: 24; Layout.preferredWidth: Math.max(62, dtText.implicitWidth + 14); radius: 4
+                                        color: root.activeDate === modelData ? "#2563eb" : "#222533"
+                                        Text {
+                                            id: dtText
+                                            anchors.centerIn: parent
+                                            text: modelData + (modelData === "全部" ? " (" + root.mediaPool.length + ")" : "")
+                                            color: "#ffffff"; font.pixelSize: 11; font.bold: root.activeDate === modelData
+                                        }
+                                        MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
                                     }
                                 }
-                                Rectangle {
-                                    Layout.preferredWidth: 80; Layout.fillHeight: true; radius: 4; clip: true; color: "#000000"
-                                    Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop }
+                            }
+                        }
+                    }
+
+                    // 批量选择与统计状态条 (清晰、明了、好用)
+                    Rectangle {
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 34
+                        color: "#181a24"; border.color: "#1e2230"; border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
+
+                            Button {
+                                text: "全选"
+                                Layout.preferredHeight: 22
+                                onClicked: root.selectAllInActiveFilter()
+                                background: Rectangle { color: parent.hovered ? "#3b82f6" : "#272a38"; radius: 3 }
+                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "反选"
+                                Layout.preferredHeight: 22
+                                onClicked: root.invertSelectionInActiveFilter()
+                                background: Rectangle { color: parent.hovered ? "#334155" : "#272a38"; radius: 3 }
+                                contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Button {
+                                text: "清空"
+                                Layout.preferredHeight: 22
+                                onClicked: root.clearAllInActiveFilter()
+                                background: Rectangle { color: parent.hovered ? "#450a0a" : "#272a38"; radius: 3 }
+                                contentItem: Text { text: parent.text; color: "#fca5a5"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            Rectangle {
+                                Layout.preferredHeight: 22
+                                Layout.preferredWidth: selStatsText.implicitWidth + 12
+                                radius: 3
+                                color: root.selectedCount > 0 ? "#1e3a5f" : "#1e2230"
+                                border.color: root.selectedCount > 0 ? "#3b82f6" : "#334155"
+
+                                Text {
+                                    id: selStatsText
+                                    anchors.centerIn: parent
+                                    text: "已选 " + root.selectedCount + " / " + root.getFilteredMedia().length + " (" + root.selectedDurationStr + ")"
+                                    color: root.selectedCount > 0 ? "#93c5fd" : "#64748b"
+                                    font.pixelSize: 10
+                                    font.bold: true
                                 }
-                                ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 2
-                                    Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                    RowLayout {
-                                        spacing: 4
-                                        Text { text: modelData.duration_str; color: "#94a3b8"; font.pixelSize: 10 }
+                            }
+                        }
+                    }
+
+                    // 视图容器
+                    Item {
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.fillHeight: true
+
+                        // 分支 A: 网格大图卡片视图 (默认)
+                        GridView {
+                            id: desktopMediaGrid
+                            visible: root.mediaViewMode === "grid"
+                            anchors.fill: parent; anchors.margins: 4
+                            clip: true
+                            cellWidth: Math.floor(desktopMediaGrid.width / 2)
+                            cellHeight: 126
+                            model: root.getFilteredMedia()
+
+                            delegate: Item {
+                                width: desktopMediaGrid.cellWidth; height: desktopMediaGrid.cellHeight
+
+                                Rectangle {
+                                    id: gridCard
+                                    anchors.fill: parent; anchors.margins: 3
+                                    radius: 6
+                                    color: root.selectedPathsMap[modelData.path] ? "#172033" : (cardMouse.containsMouse ? "#181a24" : "#12141c")
+                                    border.color: root.selectedPathsMap[modelData.path] ? "#3b82f6" : (cardMouse.containsMouse ? "#475569" : "#1f222e")
+                                    border.width: root.selectedPathsMap[modelData.path] ? 2 : 1
+
+                                    ColumnLayout {
+                                        anchors.fill: parent; anchors.margins: 4; spacing: 4
+
+                                        // 缩略图区域
                                         Rectangle {
-                                            color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
-                                            Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
-                                            Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit D-Log" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                            Layout.fillWidth: true; Layout.preferredHeight: 74; radius: 4; clip: true; color: "#000000"
+
+                                            Image {
+                                                anchors.fill: parent
+                                                source: modelData.thumb
+                                                fillMode: Image.PreserveAspectCrop
+                                            }
+
+                                            // 左上角勾选圆圈指示器 (极为清晰醒目)
+                                            Rectangle {
+                                                anchors.left: parent.left; anchors.top: parent.top; anchors.margins: 4
+                                                width: 22; height: 22; radius: 11
+                                                color: root.selectedPathsMap[modelData.path] ? "#2563eb" : "#80000000"
+                                                border.color: root.selectedPathsMap[modelData.path] ? "#ffffff" : "#94a3b8"
+                                                border.width: 1.5
+
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    text: "✓"
+                                                    visible: !!root.selectedPathsMap[modelData.path]
+                                                    color: "#ffffff"; font.bold: true; font.pixelSize: 13
+                                                }
+                                            }
+
+                                            // 右下角时长标签
+                                            Rectangle {
+                                                anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 4
+                                                height: 15; width: durText.implicitWidth + 8; radius: 2; color: "#b3000000"
+                                                Text { id: durText; anchors.centerIn: parent; text: modelData.duration_str; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                            }
+
+                                            // 右上角 10-Bit HDR 标签
+                                            Rectangle {
+                                                visible: modelData.is_10bit
+                                                anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 4
+                                                height: 14; width: 34; radius: 2; color: "#8b5cf6"
+                                                Text { anchors.centerIn: parent; text: "10-Bit"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
+                                            }
+
+                                            // 悬浮预览按钮
+                                            Rectangle {
+                                                anchors.centerIn: parent
+                                                width: 32; height: 32; radius: 16
+                                                color: "#b3000000"
+                                                border.color: "#38bdf8"; border.width: 1
+                                                visible: cardMouse.containsMouse
+                                                Text { anchors.centerIn: parent; text: "▶"; color: "#38bdf8"; font.pixelSize: 12 }
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    onClicked: (mouse) => {
+                                                        player.stop()
+                                                        player.source = "file://" + modelData.path
+                                                        player.position = 0
+                                                        player.play()
+                                                        mouse.accepted = true
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // 下方文件信息
+                                        ColumnLayout {
+                                            Layout.fillWidth: true; spacing: 1
+                                            Text {
+                                                text: modelData.filename
+                                                color: root.selectedPathsMap[modelData.path] ? "#ffffff" : "#cbd5e1"
+                                                font.pixelSize: 10; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true
+                                            }
+                                            RowLayout {
+                                                spacing: 4
+                                                Text { text: modelData.width + "×" + modelData.height; color: "#64748b"; font.pixelSize: 9 }
+                                                Item { Layout.fillWidth: true }
+                                                Text { text: modelData.date ? modelData.date.substring(5) : ""; color: "#64748b"; font.pixelSize: 9 }
+                                            }
+                                        }
+                                    }
+
+                                    // 单击整个卡片立即切换勾选状态，双击预览
+                                    MouseArea {
+                                        id: cardMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        onClicked: root.toggleItemSelection(modelData.path)
+                                        onDoubleClicked: {
+                                            player.stop()
+                                            player.source = "file://" + modelData.path
+                                            player.position = 0
+                                            player.play()
                                         }
                                     }
                                 }
                             }
+                        }
 
-                            MouseArea {
-                                anchors.fill: parent; propagateComposedEvents: true
-                                onClicked: (mouse) => {
-                                    player.stop()
-                                    player.source = "file://" + modelData.path
-                                    player.position = 0
-                                    player.play()
-                                    mouse.accepted = false
+                        // 分支 B: 详细列表模式
+                        ListView {
+                            id: desktopMediaListView
+                            visible: root.mediaViewMode === "list"
+                            anchors.fill: parent; anchors.margins: 4
+                            clip: true; spacing: 4
+                            model: root.getFilteredMedia()
+
+                            delegate: Rectangle {
+                                width: desktopMediaListView.width; height: 64; radius: 5
+                                color: root.selectedPathsMap[modelData.path] ? "#172033" : (listMouse.containsMouse ? "#181a24" : "#14151d")
+                                border.color: root.selectedPathsMap[modelData.path] ? "#3b82f6" : (listMouse.containsMouse ? "#475569" : "#1f222e")
+                                border.width: root.selectedPathsMap[modelData.path] ? 2 : 1
+
+                                RowLayout {
+                                    anchors.fill: parent; anchors.margins: 6; spacing: 8
+
+                                    // 圆形勾选指示器
+                                    Rectangle {
+                                        Layout.preferredWidth: 22; Layout.preferredHeight: 22; radius: 11
+                                        color: root.selectedPathsMap[modelData.path] ? "#2563eb" : "#80000000"
+                                        border.color: root.selectedPathsMap[modelData.path] ? "#ffffff" : "#94a3b8"
+                                        border.width: 1.5
+
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "✓"
+                                            visible: !!root.selectedPathsMap[modelData.path]
+                                            color: "#ffffff"; font.bold: true; font.pixelSize: 13
+                                        }
+                                    }
+
+                                    // 缩略图
+                                    Rectangle {
+                                        Layout.preferredWidth: 84; Layout.fillHeight: true; radius: 4; clip: true; color: "#000000"
+                                        Image { anchors.fill: parent; source: modelData.thumb; fillMode: Image.PreserveAspectCrop }
+                                        Rectangle {
+                                            anchors.centerIn: parent; width: 24; height: 24; radius: 12
+                                            color: "#b3000000"; border.color: "#38bdf8"; border.width: 1
+                                            visible: listMouse.containsMouse
+                                            Text { anchors.centerIn: parent; text: "▶"; color: "#38bdf8"; font.pixelSize: 10 }
+                                        }
+                                    }
+
+                                    // 信息列
+                                    ColumnLayout {
+                                        Layout.fillWidth: true; spacing: 2
+                                        Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                        RowLayout {
+                                            spacing: 6
+                                            Text { text: modelData.duration_str; color: "#94a3b8"; font.pixelSize: 10 }
+                                            Text { text: modelData.width + "×" + modelData.height; color: "#64748b"; font.pixelSize: 10 }
+                                            Rectangle {
+                                                color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
+                                                Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
+                                                Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit D-Log" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: listMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: root.toggleItemSelection(modelData.path)
+                                    onDoubleClicked: {
+                                        player.stop()
+                                        player.source = "file://" + modelData.path
+                                        player.position = 0
+                                        player.play()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 底部行动条 (有素材时常驻)
+                    Rectangle {
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 48
+                        color: "#161822"; border.color: "#1f222e"; border.width: 1
+
+                        RowLayout {
+                            anchors.fill: parent; anchors.margins: 8; spacing: 8
+
+                            Button {
+                                Layout.fillWidth: true; Layout.preferredHeight: 32
+                                text: "+ 加入时间线"
+                                enabled: root.selectedCount > 0
+                                onClicked: root.addSelectedToTimeline()
+                                background: Rectangle {
+                                    color: root.selectedCount > 0 ? (parent.hovered ? "#1e293b" : "#0f172a") : "#161922"
+                                    border.color: root.selectedCount > 0 ? "#38bdf8" : "#334155"
+                                    radius: 4
+                                }
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: root.selectedCount > 0 ? "#38bdf8" : "#64748b"
+                                    font.bold: true; font.pixelSize: 11
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true; Layout.preferredHeight: 32
+                                text: "AI 智能初筛 (" + root.selectedCount + ")"
+                                enabled: root.selectedCount > 0
+                                onClicked: aiModal.open()
+                                background: Rectangle {
+                                    radius: 4
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: root.selectedCount > 0 ? "#2563eb" : "#334155" }
+                                        GradientStop { position: 1.0; color: root.selectedCount > 0 ? "#7c3aed" : "#1e293b" }
+                                    }
+                                }
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: root.selectedCount > 0 ? "#ffffff" : "#64748b"
+                                    font.bold: true; font.pixelSize: 11
+                                    horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
                                 }
                             }
                         }

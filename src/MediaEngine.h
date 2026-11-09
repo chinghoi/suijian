@@ -32,6 +32,7 @@ public slots:
 
 signals:
     void mediaLoaded(const QStringList &dates, const QVariantList &mediaList, const QString &sourceLabel);
+    void importProgress(int current, int total, const QString &filename);
     void djiFound(const QString &path);
     void recentDirsLoaded(const QStringList &dirs);
     void statusMessage(const QString &message);

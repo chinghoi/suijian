@@ -224,6 +224,7 @@ def find_dji_paths():
 
 class MediaImportWorker(QThread):
     finished = Signal(list, list, str) # dates, media_list, source_label
+    progress = Signal(int, int, str)   # current, total, filename
     error = Signal(str)
 
     def __init__(self, targets):
@@ -268,14 +269,31 @@ class MediaImportWorker(QThread):
             if dir_for_recent:
                 save_recent_dir(dir_for_recent)
 
+            total_files = len(collected_files)
+            completed_count = 0
             media_list = []
             dates_set = set()
-            for f in collected_files:
-                meta = probe_file(f)
-                if meta:
-                    media_list.append(meta)
-                    dates_set.add(meta["date"])
 
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            # 最高 8 线程并发极速提取视频元数据与缩略图，避免单线程 USB 阻塞
+            max_workers = min(8, max(2, os.cpu_count() or 4))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_file = {executor.submit(probe_file, f): f for f in collected_files}
+                for future in as_completed(future_to_file):
+                    f = future_to_file[future]
+                    completed_count += 1
+                    base_name = os.path.basename(f)
+                    self.progress.emit(completed_count, total_files, base_name)
+                    try:
+                        meta = future.result()
+                        if meta:
+                            media_list.append(meta)
+                            dates_set.add(meta["date"])
+                    except Exception:
+                        pass
+
+            media_list.sort(key=lambda x: x["path"])
             dates = sorted(list(dates_set), reverse=True)
             source_label = dir_for_recent if dir_for_recent else f"{len(media_list)} 个视频文件"
             self.finished.emit(dates, media_list, source_label)
@@ -864,6 +882,7 @@ class ExportWorker(QThread):
 class EditorBridge(QObject):
     # 状态与数据信号
     mediaLoaded = Signal(list, list, str) # dates, mediaList, sourceLabel
+    importProgress = Signal(int, int, str) # current, total, filename
     djiFound = Signal(str)
     recentDirsLoaded = Signal(list)
     statusMessage = Signal(str)
@@ -945,11 +964,24 @@ class EditorBridge(QObject):
             if s.startswith('file://'):
                 s = s[7:]
             clean_paths.append(s)
-        self.statusMessage.emit(f"正在导入 {len(clean_paths)} 项素材...")
+
+        if not clean_paths:
+            return
+
+        self.statusMessage.emit(f"正在多线程并发解析 {len(clean_paths)} 项素材...")
+
+        # 安全处理正在运行的旧导入任务，避免在主线程 wait() 造成 UI 假死卡顿
         if self._scan_worker and self._scan_worker.isRunning():
-            self._scan_worker.wait()
+            try:
+                self._scan_worker.finished.disconnect()
+                self._scan_worker.progress.disconnect()
+                self._scan_worker.error.disconnect()
+            except Exception:
+                pass
+
         self._scan_worker = MediaImportWorker(clean_paths)
         self._scan_worker.finished.connect(self._on_import_finished)
+        self._scan_worker.progress.connect(self.importProgress.emit)
         self._scan_worker.error.connect(self.scanError.emit)
         self._scan_worker.start()
 
