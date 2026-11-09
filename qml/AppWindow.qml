@@ -14,9 +14,8 @@ ApplicationWindow {
     title: "DJI 智能剪辑大师 Pro (4K 10-Bit HDR · 极速导入)"
     color: "#0c0d11"
 
-    // 响应式移动端状态
-    property bool isForceMobile: false
-    readonly property bool isMobileMode: isForceMobile || (root.width < 920)
+    // 响应式布局（根据窗口宽度与横竖屏自动无缝切换，完全纯净无人工按钮）
+    readonly property bool isMobileMode: root.width < 920 || (root.height > root.width && root.width < 1050)
     property int mobileTab: 1 // 默认在素材池，方便导入
 
     // 拖拽与素材源状态
@@ -460,14 +459,6 @@ ApplicationWindow {
                             font.bold: true
                         }
                     }
-                }
-
-                // 响应式布局快捷切换测试开关
-                Button {
-                    text: root.isForceMobile ? "💻 切回桌面" : "📱 移动端布局"
-                    onClicked: root.isForceMobile = !root.isForceMobile
-                    background: Rectangle { color: root.isForceMobile ? "#1e3a8a" : "#222533"; radius: 5 }
-                    contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
 
                 // 导出大按钮
