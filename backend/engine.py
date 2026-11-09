@@ -48,6 +48,8 @@ def probe_file(filepath):
                 rot = int(sd['rotation'])
         if not rot:
             rot = int(v_stream.get('tags', {}).get('rotate', 0))
+        if not rot:
+            rot = int(info.get('format', {}).get('tags', {}).get('rotate', 0))
             
         transpose = None
         if rot == 90:
@@ -830,7 +832,18 @@ class ExportWorker(QThread):
                         cmd += ['-vf', 'scale=2160:3840', '-map', '0:v:0', '-map', '0:a:0?']
                 else:
                     if t['orient'] == 'vertical':
-                        cmd += ['-filter_complex', filter_v2h, '-map', '[outv]', '-map', '0:a:0?']
+                        if t.get('transpose'):
+                            v2h_tr = (
+                                f'[0:v:0]transpose={t["transpose"]},split=2[fg_in][bg_in];'
+                                '[bg_in]scale=480:854,crop=480:270,boxblur=8:2,scale=3840:2160:flags=fast_bilinear,eq=brightness=-0.08:saturation=1.15[bg];'
+                                '[fg_in]scale=1216:2160[fg];'
+                                '[bg][fg]overlay=(W-w)/2:(H-h)/2[outv]'
+                            )
+                            cmd += ['-filter_complex', v2h_tr, '-map', '[outv]', '-map', '0:a:0?']
+                        else:
+                            cmd += ['-filter_complex', filter_v2h, '-map', '[outv]', '-map', '0:a:0?']
+                    elif t.get('transpose'):
+                        cmd += ['-vf', f'transpose={t["transpose"]},scale=3840:2160', '-map', '0:v:0', '-map', '0:a:0?']
                     else:
                         cmd += ['-vf', 'scale=3840:2160', '-map', '0:v:0', '-map', '0:a:0?']
 
@@ -877,6 +890,125 @@ class ExportWorker(QThread):
             self.failed.emit(str(e))
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+
+
+def generate_metadata_list(clips, out_path, format_type="json"):
+    import csv
+    if format_type.lower() == "csv":
+        with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["镜头编号", "源文件名", "源文件路径", "入点起点(秒)", "出点终点(秒)", "裁切保留时长(秒)", "时长文本", "真实拍摄朝向", "10-Bit色彩", "转录文本/字幕"])
+            for i, c in enumerate(clips):
+                writer.writerow([
+                    i + 1,
+                    c.get("filename", ""),
+                    c.get("src", ""),
+                    f"{float(c.get('start', 0.0)):.2f}",
+                    f"{float(c.get('end', 0.0)):.2f}",
+                    f"{float(c.get('dur', 0.0)):.2f}",
+                    c.get("dur_str", ""),
+                    "竖屏 9:16" if c.get("orient") == "vertical" else "横屏 16:9",
+                    "10-Bit HDR (D-Log M)" if c.get("is_10bit") else "8-Bit SDR",
+                    c.get("text", "")
+                ])
+    else:
+        meta_data = {
+            "project": "随剪 SuiJian",
+            "export_time": datetime.datetime.now().isoformat(),
+            "clip_count": len(clips),
+            "total_duration_sec": round(sum(float(c.get('dur', 0.0)) for c in clips), 2),
+            "clips": []
+        }
+        for i, c in enumerate(clips):
+            meta_data["clips"].append({
+                "index": i + 1,
+                "filename": c.get("filename", ""),
+                "src_path": c.get("src", ""),
+                "in_point_sec": float(c.get("start", 0.0)),
+                "out_point_sec": float(c.get("end", 0.0)),
+                "cut_duration_sec": float(c.get("dur", 0.0)),
+                "duration_formatted": c.get("dur_str", ""),
+                "orientation": c.get("orient", "horizontal"),
+                "is_10bit_hdr": bool(c.get("is_10bit")),
+                "subtitles": c.get("subtitles", []),
+                "transcript_text": c.get("text", "")
+            })
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(meta_data, f, ensure_ascii=False, indent=2)
+
+
+def generate_fcpxml(clips, master_canvas, out_path):
+    import xml.etree.ElementTree as ET
+    from xml.dom import minidom
+    
+    is_vert = (master_canvas == 'vertical')
+    w = "2160" if is_vert else "3840"
+    h = "3840" if is_vert else "2160"
+    
+    root = ET.Element('fcpxml', version='1.9')
+    resources = ET.SubElement(root, 'resources')
+    
+    fmt_id = "r1"
+    ET.SubElement(resources, 'format', {
+        'id': fmt_id,
+        'name': f'FFVideoFormat{w}x{h}p5994',
+        'frameDuration': '1001/60000s',
+        'width': w,
+        'height': h
+    })
+    
+    asset_map = {}
+    for i, c in enumerate(clips):
+        src_path = c.get('src', '')
+        if src_path not in asset_map:
+            aid = f"r{len(asset_map) + 2}"
+            asset_map[src_path] = aid
+            dur_sec = float(c.get('dur', 10.0))
+            ET.SubElement(resources, 'asset', {
+                'id': aid,
+                'name': c.get('filename', os.path.basename(src_path)),
+                'src': f"file://{src_path}",
+                'start': '0s',
+                'duration': f"{dur_sec:.3f}s",
+                'hasVideo': '1',
+                'hasAudio': '1',
+                'format': fmt_id
+            })
+            
+    library = ET.SubElement(root, 'library')
+    event = ET.SubElement(library, 'event', name="随剪智能粗剪工程")
+    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    project = ET.SubElement(event, 'project', name=f"随剪_剪辑工程_{now_str}")
+    
+    total_sec = sum(float(c.get('dur', 0.0)) for c in clips)
+    sequence = ET.SubElement(project, 'sequence', {
+        'format': fmt_id,
+        'duration': f"{total_sec:.3f}s",
+        'tcStart': '0s',
+        'tcFormat': 'NDF'
+    })
+    spine = ET.SubElement(sequence, 'spine')
+    
+    offset_sec = 0.0
+    for i, c in enumerate(clips):
+        src_path = c.get('src', '')
+        aid = asset_map.get(src_path, fmt_id)
+        start_sec = float(c.get('start', 0.0))
+        dur_sec = float(c.get('dur', 0.0))
+        ET.SubElement(spine, 'asset-clip', {
+            'ref': aid,
+            'name': f"镜头_{i+1}_{c.get('filename', '')}",
+            'offset': f"{offset_sec:.3f}s",
+            'start': f"{start_sec:.3f}s",
+            'duration': f"{dur_sec:.3f}s",
+            'format': fmt_id
+        })
+        offset_sec += dur_sec
+        
+    xml_raw = ET.tostring(root, encoding='utf-8')
+    pretty_xml = minidom.parseString(xml_raw).toprettyxml(indent="  ", encoding="utf-8")
+    with open(out_path, "wb") as f:
+        f.write(pretty_xml)
 
 
 class EditorBridge(QObject):
@@ -1093,3 +1225,32 @@ class EditorBridge(QObject):
             self.statusMessage.emit(f"字幕已导出: {output_path}")
         except Exception as e:
             self.statusMessage.emit(f"字幕导出失败: {e}")
+
+    @Slot(list, str, str)
+    def exportMetadata(self, clips, format_type, output_path):
+        """导出剪辑片段的结构化元数据清单 (JSON 或 CSV)"""
+        try:
+            ext = "csv" if format_type.lower() == "csv" else "json"
+            if not output_path:
+                output_path = os.path.join(
+                    os.path.expanduser("~/Downloads"),
+                    f"随剪_元数据清单_{datetime.datetime.now().strftime('%m月%d日_%H%M')}.{ext}"
+                )
+            generate_metadata_list(clips, output_path, ext)
+            self.statusMessage.emit(f"元数据清单已成功导出: {output_path}")
+        except Exception as e:
+            self.statusMessage.emit(f"元数据清单导出失败: {e}")
+
+    @Slot(list, str, str)
+    def exportFcpxml(self, clips, master_canvas, output_path):
+        """导出标准 Final Cut Pro XML (FCPXML) 专业剪辑工程"""
+        try:
+            if not output_path:
+                output_path = os.path.join(
+                    os.path.expanduser("~/Downloads"),
+                    f"随剪_剪辑工程_{datetime.datetime.now().strftime('%m月%d日_%H%M')}.fcpxml"
+                )
+            generate_fcpxml(clips, master_canvas, output_path)
+            self.statusMessage.emit(f"FCPXML 工程已导出: {output_path} (可直接在 FCPX 或达芬奇中导入打开)")
+        except Exception as e:
+            self.statusMessage.emit(f"FCPXML 导出失败: {e}")

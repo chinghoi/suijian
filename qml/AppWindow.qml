@@ -53,19 +53,21 @@ ApplicationWindow {
 
     function getAutoMasterCanvas() {
         var items = []
-        var paths = root.getSelectedPathsList()
-        if (paths.length > 0) {
-            for (var i = 0; i < root.mediaPool.length; i++) {
-                if (paths.indexOf(root.mediaPool[i].path) !== -1) {
-                    items.push(root.mediaPool[i])
+        // 优先以当前时间线上的镜头为准 (已包含用户手动矫正的真实方向)
+        if (root.timelineClips.length > 0) {
+            items = root.timelineClips
+        } else {
+            var paths = root.getSelectedPathsList()
+            if (paths.length > 0) {
+                for (var i = 0; i < root.mediaPool.length; i++) {
+                    if (paths.indexOf(root.mediaPool[i].path) !== -1) {
+                        items.push(root.mediaPool[i])
+                    }
                 }
             }
-        }
-        if (items.length === 0 && root.timelineClips.length > 0) {
-            items = root.timelineClips
-        }
-        if (items.length === 0) {
-            items = root.mediaPool
+            if (items.length === 0) {
+                items = root.mediaPool
+            }
         }
         var vertCount = 0
         var horizCount = 0
@@ -291,11 +293,37 @@ ApplicationWindow {
         return root.selectedCount
     }
 
+    function rotateActiveClip() {
+        if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
+        pushUndoState("矫正镜头真实方向")
+        var newClips = root.timelineClips.slice()
+        var cur = Object.assign({}, newClips[activeClipIndex])
+        if (cur.orient === "vertical") {
+            cur.orient = "horizontal"
+            cur.transpose = null
+        } else {
+            cur.orient = "vertical"
+            cur.transpose = 1
+        }
+        newClips[activeClipIndex] = cur
+        root.timelineClips = newClips
+        if (root.canvasChoice === "auto") {
+            root.masterCanvas = root.getAutoMasterCanvas()
+        }
+        statusBanner.show("已矫正镜头真实方向为: " + (cur.orient === "vertical" ? "9:16 竖屏" : "16:9 横屏") + " (成片画幅自适应: " + (root.masterCanvas === "vertical" ? "竖屏" : "横屏") + ")")
+    }
+
     function getSelectedPathsList() {
         var list = []
         for (var i = 0; i < root.mediaPool.length; i++) {
             var p = root.mediaPool[i].path
             if (root.selectedPathsMap[p]) list.push(p)
+        }
+        // 若用户未手动单选特定素材，默认针对当前媒体池全部素材（避免空集导致立即返回空退出）
+        if (list.length === 0 && root.mediaPool.length > 0) {
+            for (var j = 0; j < root.mediaPool.length; j++) {
+                list.push(root.mediaPool[j].path)
+            }
         }
         return list
     }
@@ -912,6 +940,42 @@ ApplicationWindow {
                     fillMode: VideoOutput.PreserveAspectFit
                 }
 
+                // 移动端待机模式黑底提示 (彻底消除纯黑假死错觉)
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#0c0d12"
+                    visible: root.monitorMode === "idle"
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 6
+                        Text { text: "监视器待机"; color: "#94a3b8"; font.bold: true; font.pixelSize: 13; Layout.alignment: Qt.AlignHCenter }
+                        Text { text: "在下方「素材」选择预览，或在「初筛」运行智能粗剪"; color: "#64748b"; font.pixelSize: 11; Layout.alignment: Qt.AlignHCenter }
+                    }
+                }
+
+                // 移动端素材源片独立预览顶栏
+                Rectangle {
+                    anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+                    height: 34; color: "#e60f172a"; visible: root.monitorMode === "preview"
+                    RowLayout {
+                        anchors.fill: parent; anchors.margins: 6; spacing: 6
+                        Text { text: "[源片预览]"; color: "#38bdf8"; font.bold: true; font.pixelSize: 10 }
+                        Text { text: root.previewItem ? root.previewItem.filename : ""; color: "#ffffff"; font.pixelSize: 10; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                        Button {
+                            text: "+ 加到时间线"; Layout.preferredHeight: 22
+                            onClicked: { root.appendSingleMediaToTimeline(root.previewItem); root.stopMediaPreview(); root.mobileTab = 0 }
+                            background: Rectangle { color: "#2563eb"; radius: 3 }
+                            contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 9; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            text: "✕"; Layout.preferredWidth: 22; Layout.preferredHeight: 22
+                            onClicked: root.stopMediaPreview()
+                            background: Rectangle { color: "#334155"; radius: 3 }
+                            contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        }
+                    }
+                }
+
                 MouseArea {
                     anchors.fill: parent
                     onClicked: {
@@ -1211,19 +1275,88 @@ ApplicationWindow {
                                 Text { text: "镜头: " + (mobInspectorPane.curMobClip ? mobInspectorPane.curMobClip.filename : "未选中"); color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
                                 Text { text: "截取: " + (mobInspectorPane.curMobClip ? mobInspectorPane.curMobClip.dur_str : "0s"); color: "#60a5fa"; font.bold: true; font.pixelSize: 11 }
                             }
+
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                Rectangle {
+                                    visible: Boolean(mobInspectorPane.curMobClip)
+                                    color: "#3b82f6"; radius: 3
+                                    Layout.preferredHeight: 22; Layout.preferredWidth: mobOrientText.implicitWidth + 14
+                                    Text {
+                                        id: mobOrientText; anchors.centerIn: parent
+                                        text: (mobInspectorPane.curMobClip && mobInspectorPane.curMobClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9") + " ↻"
+                                        color: "#ffffff"; font.pixelSize: 10; font.bold: true
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.rotateActiveClip()
+                                    }
+                                }
+                                Item { Layout.fillWidth: true }
+                                Button {
+                                    text: "复制此段"; Layout.preferredHeight: 24
+                                    enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35
+                                    onClicked: root.duplicateCurrentClip()
+                                    background: Rectangle { color: parent.enabled ? "#1e3a8a" : "#222533"; radius: 3 }
+                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                }
+                                Button {
+                                    text: "删除此段"; Layout.preferredHeight: 24
+                                    enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35
+                                    onClicked: root.deleteCurrentClip()
+                                    background: Rectangle { color: parent.enabled ? "#7f1d1d" : "#222533"; radius: 3 }
+                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                }
+                            }
                         }
                     }
 
-                    // 移动端空状态提示
+                    // 移动端空状态提示与 AI 初筛运行态
                     Rectangle {
                         visible: root.timelineClips.length === 0
                         Layout.fillWidth: true; Layout.fillHeight: true
                         color: "transparent"
                         ColumnLayout {
                             anchors.centerIn: parent
-                            spacing: 8
-                            Text { text: "时间线暂无镜头片段"; color: "#94a3b8"; font.bold: true; font.pixelSize: 13; Layout.alignment: Qt.AlignHCenter }
-                            Text { text: "请在「素材」池选择素材加入时间线\n或在「初筛」运行 AI 自动粗剪"; color: "#64748b"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; Layout.alignment: Qt.AlignHCenter }
+                            spacing: 12
+                            width: Math.min(320, parent.width - 24)
+
+                            // 运行中进度卡片
+                            Rectangle {
+                                visible: aiModal.progress > 0 && aiModal.progress < 100
+                                Layout.fillWidth: true; Layout.preferredHeight: 90
+                                color: "#182032"; border.color: "#3b82f6"; border.width: 1.5; radius: 8
+                                ColumnLayout {
+                                    anchors.fill: parent; anchors.margins: 10; spacing: 6
+                                    Text { text: "AI 正在全速智能初筛剪辑中..."; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
+                                    ProgressBar { Layout.fillWidth: true; value: aiModal.progress / 100.0 }
+                                    Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                }
+                            }
+
+                            ColumnLayout {
+                                visible: aiModal.progress === 0 || aiModal.progress >= 100
+                                Layout.fillWidth: true; spacing: 8
+                                Text { text: "时间线暂无镜头片段"; color: "#94a3b8"; font.bold: true; font.pixelSize: 13; Layout.alignment: Qt.AlignHCenter }
+                                Text { text: "请在「素材」池选择素材加入时间线\n或在「初筛」运行 AI 自动粗剪"; color: "#64748b"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; Layout.alignment: Qt.AlignHCenter }
+                                RowLayout {
+                                    Layout.alignment: Qt.AlignHCenter; spacing: 10
+                                    Button {
+                                        text: "查看素材 (" + root.mediaPool.length + ")"
+                                        onClicked: root.mobileTab = 1
+                                        background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#38bdf8" }
+                                        contentItem: Text { text: parent.text; color: "#38bdf8"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                    }
+                                    Button {
+                                        text: "开始 AI 智能初筛"
+                                        onClicked: root.mobileTab = 2
+                                        background: Rectangle { color: "#2563eb"; radius: 4 }
+                                        contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1495,64 +1628,156 @@ ApplicationWindow {
                     }
                 }
 
-                // Tab 2: 移动端 AI 智能初筛快速操作
-                ColumnLayout {
+                // Tab 2: 移动端 AI 智能初筛控制中心
+                Flickable {
+                    id: mobAiTabScroll
                     anchors.fill: parent
                     visible: root.mobileTab === 2
-                    anchors.margins: 14
-                    spacing: 12
+                    contentWidth: width
+                    contentHeight: mobAiCol.implicitHeight + 36
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
 
-                    Text { text: "AI 智能剪辑策略："; color: "#ffffff"; font.bold: true; font.pixelSize: 13 }
+                    ColumnLayout {
+                        id: mobAiCol
+                        width: parent.width - 24
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.top: parent.top
+                        anchors.topMargin: 12
+                        spacing: 10
 
-                    Button {
-                        text: "口播智能粗剪 (废句消除 / 连贯留声 / 生成字幕)"
-                        Layout.fillWidth: true; Layout.preferredHeight: 44
-                        onClicked: {
-                            bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "4", 35.0, "horizontal", "10bit")
-                            root.mobileTab = 0
+                        // 运行状态卡片 (初筛进行中展示)
+                        Rectangle {
+                            visible: aiModal.progress > 0 && aiModal.progress < 100
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 120
+                            color: "#182032"; border.color: "#3b82f6"; border.width: 1.5; radius: 8
+
+                            ColumnLayout {
+                                anchors.fill: parent; anchors.margins: 10; spacing: 6
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text { text: "AI 智能初筛全速进行中"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
+                                    Item { Layout.fillWidth: true }
+                                    Text { text: Math.round(aiModal.progress) + "%"; color: "#60a5fa"; font.bold: true; font.pixelSize: 13 }
+                                }
+                                ProgressBar { Layout.fillWidth: true; value: aiModal.progress / 100.0 }
+                                Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
+
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    Button {
+                                        text: "暂停"
+                                        onClicked: bridge.pauseAiScreening("移动端主动暂停")
+                                        background: Rectangle { color: "#334155"; radius: 4 }
+                                        contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                    }
+                                    Button {
+                                        text: "安全拔卡去录像"
+                                        onClicked: bridge.safeEjectDevice()
+                                        background: Rectangle { color: "#065f46"; radius: 4; border.color: "#10b981" }
+                                        contentItem: Text { text: parent.text; color: "#6ee7b7"; font.bold: true; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Button {
+                                        text: "中止取消"
+                                        onClicked: bridge.cancelCurrentJob()
+                                        background: Rectangle { color: "#7f1d1d"; radius: 4 }
+                                        contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                    }
+                                }
+                            }
                         }
-                        background: Rectangle { color: "#065f46"; radius: 6; border.color: "#10b981" }
-                        contentItem: Text { text: parent.text; color: "#6ee7b7"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    }
 
-                    Button {
-                        text: "视觉审美优先 (保留优质镜头/过滤抖动)"
-                        Layout.fillWidth: true; Layout.preferredHeight: 44
-                        onClicked: {
-                            bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "1", 35.0, "horizontal", "10bit")
-                            root.mobileTab = 0
+                        Text { text: "选择智能剪辑模型策略："; color: "#cbd5e1"; font.pixelSize: 12; font.bold: true }
+                        ComboBox {
+                            id: mobAiModeCombo; Layout.fillWidth: true
+                            model: [
+                                "深度多模态综合混合 (推荐 · 口播连贯 + 视觉防抖美学 + 静默剔除)",
+                                "口播智能粗剪 (Vlog/访谈：剔除废话重录 / 连贯保留 / 自动生成字幕)",
+                                "视觉审美优先 (航拍/风光/运动：保留优质稳定构图，过滤抖动与废片)",
+                                "纯语音静音切分 (基础粗切：仅切除无声与死寂停顿，保留有声片段)"
+                            ]
                         }
-                        background: Rectangle { color: "#312e81"; radius: 6; border.color: "#4338ca" }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    }
 
-                    Button {
-                        text: "语音静音切分 (无声剔除 / 智能留声)"
-                        Layout.fillWidth: true; Layout.preferredHeight: 44
-                        onClicked: {
-                            bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "2", 35.0, "horizontal", "10bit")
-                            root.mobileTab = 0
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "成片视频画幅方向："; color: "#cbd5e1"; font.pixelSize: 12; font.bold: true }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                text: "当前识别: " + (root.getAutoMasterCanvas() === "vertical" ? "9:16 竖屏" : "16:9 横屏")
+                                color: "#38bdf8"; font.pixelSize: 10; font.bold: true
+                            }
                         }
-                        background: Rectangle { color: "#1e293b"; radius: 6; border.color: "#334155" }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    }
-
-                    Button {
-                        text: "深度多模态综合混合 (多模态高光精选)"
-                        Layout.fillWidth: true; Layout.preferredHeight: 44
-                        onClicked: {
-                            bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), "3", 35.0, "horizontal", "10bit")
-                            root.mobileTab = 0
+                        ComboBox {
+                            id: mobAiCanvasCombo; Layout.fillWidth: true
+                            model: [
+                                "自动决定 (按所选视频真实拍摄方向智能自适应 · 推荐)",
+                                "3840×2160 16:9 横屏母带 (强制横屏)",
+                                "2160×3840 9:16 竖屏大片 (强制竖屏)"
+                            ]
+                            currentIndex: root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
+                            onActivated: {
+                                if (currentIndex === 0) root.canvasChoice = "auto"
+                                else if (currentIndex === 1) root.canvasChoice = "horizontal"
+                                else root.canvasChoice = "vertical"
+                            }
                         }
-                        background: Rectangle { color: "#1e3a8a"; radius: 6; border.color: "#2563eb" }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    }
 
-                    Item { Layout.fillHeight: true }
+                        Text { text: "成片节奏 / 期望时长："; color: "#cbd5e1"; font.pixelSize: 12; font.bold: true }
+                        ComboBox {
+                            id: mobTargetDurCombo; Layout.fillWidth: true
+                            model: [
+                                "标准成片节奏 (约 3 ~ 5 分钟 · 完整叙事与空镜)",
+                                "短视频快节奏 (约 1 ~ 2 分钟 · 提取核心高光)",
+                                "宽松完整保留 (按比例保留 · 仅过滤废片与重复错句)"
+                            ]
+                        }
 
-                    Text {
-                        text: "提示：点击后将在后台全速进行高光初筛并自动将成片镜头排列至时间线。"
-                        color: "#64748b"; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        // 开始初筛大按钮
+                        Button {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 46
+                            Layout.topMargin: 4
+                            text: {
+                                var effList = root.getSelectedPathsList()
+                                if (aiModal.progress > 0 && aiModal.progress < 100) return "初筛处理中..."
+                                return "开始 AI 智能初筛 (" + (root.selectedCount > 0 ? ("已选 " + root.selectedCount + " 个") : ("全部 " + root.mediaPool.length + " 个素材")) + ")"
+                            }
+                            enabled: root.mediaPool.length > 0 && !(aiModal.progress > 0 && aiModal.progress < 100)
+                            onClicked: {
+                                var mode = "3"
+                                if (mobAiModeCombo.currentIndex === 0) mode = "3"
+                                else if (mobAiModeCombo.currentIndex === 1) mode = "4"
+                                else if (mobAiModeCombo.currentIndex === 2) mode = "1"
+                                else if (mobAiModeCombo.currentIndex === 3) mode = "2"
+
+                                var maxDur = 240.0
+                                if (mobTargetDurCombo.currentIndex === 0) maxDur = 240.0
+                                else if (mobTargetDurCombo.currentIndex === 1) maxDur = 90.0
+                                else if (mobTargetDurCombo.currentIndex === 2) maxDur = 0.0
+
+                                var canvasMode = "horizontal"
+                                if (mobAiCanvasCombo.currentIndex === 0) canvasMode = root.getAutoMasterCanvas()
+                                else if (mobAiCanvasCombo.currentIndex === 1) canvasMode = "horizontal"
+                                else canvasMode = "vertical"
+                                root.masterCanvas = canvasMode
+
+                                aiModal.progress = 1
+                                aiModal.statusText = "正在启动初筛管道..."
+                                bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
+                            }
+                            background: Rectangle {
+                                color: parent.enabled ? "#2563eb" : "#334155"
+                                radius: 6
+                            }
+                            contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        }
+
+                        Text {
+                            text: "提示：AI 将深度分析镜头晃动、语音清晰度与美学构图，自动剪除错句与废片，并按顺序铺满时间线。"
+                            color: "#64748b"; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
                     }
                 }
             }
@@ -2410,13 +2635,28 @@ ApplicationWindow {
                         Item { Layout.fillWidth: true }
                         Rectangle {
                             visible: Boolean(inspectorPane.currentActiveClip)
-                            color: "#3b82f6"; radius: 3
-                            Layout.preferredHeight: 18; Layout.preferredWidth: orientTagText.implicitWidth + 12
-                            Text {
-                                id: orientTagText
+                            color: orientArea.containsMouse ? "#2563eb" : "#3b82f6"; radius: 3
+                            Layout.preferredHeight: 20; Layout.preferredWidth: orientTagLayout.implicitWidth + 12
+                            RowLayout {
+                                id: orientTagLayout
                                 anchors.centerIn: parent
-                                text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9"
-                                color: "#ffffff"; font.pixelSize: 10; font.bold: true
+                                spacing: 3
+                                Text {
+                                    id: orientTagText
+                                    text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9"
+                                    color: "#ffffff"; font.pixelSize: 10; font.bold: true
+                                }
+                                Text {
+                                    text: "↻"
+                                    color: "#bfdbfe"; font.pixelSize: 10; font.bold: true
+                                }
+                            }
+                            MouseArea {
+                                id: orientArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.rotateActiveClip()
                             }
                         }
                         Rectangle {
@@ -2530,6 +2770,14 @@ ApplicationWindow {
                     }
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#1f222e" }
+
+                    Button {
+                        text: "↻ 矫正真实方向 (切换横屏/竖屏)"; Layout.fillWidth: true; Layout.preferredHeight: 36
+                        enabled: Boolean(inspectorPane.currentActiveClip); opacity: enabled ? 1.0 : 0.35
+                        onClicked: root.rotateActiveClip()
+                        background: Rectangle { color: parent.enabled ? "#1e293b" : "#222533"; radius: 6; border.color: parent.enabled ? "#3b82f6" : "#334155" }
+                        contentItem: Text { text: parent.text; color: "#60a5fa"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
 
                     Button {
                         text: "在指针位置分割 (Split)"; Layout.fillWidth: true; Layout.preferredHeight: 38
@@ -3180,7 +3428,7 @@ ApplicationWindow {
     Dialog {
         id: exportModal
         anchors.centerIn: parent
-        width: Math.min(540, root.width - 32); height: 430
+        width: Math.min(560, root.width - 24); height: Math.min(500, root.height - 24)
         modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
 
@@ -3195,7 +3443,7 @@ ApplicationWindow {
                 anchors.rightMargin: 12
 
                 Text {
-                    text: "导出 4K 60fps 最终母带"
+                    text: "导出 4K 60fps 最终母带与元数据"
                     color: "#f1f5f9"
                     font.bold: true
                     font.pixelSize: 13
@@ -3230,7 +3478,7 @@ ApplicationWindow {
         }
 
         property real progress: 0.0
-        property string statusText: "准备压制..."
+        property string statusText: "准备就绪"
 
         onAboutToShow: {
             exportCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
@@ -3281,8 +3529,63 @@ ApplicationWindow {
                 }
             }
 
+            Rectangle { Layout.fillWidth: true; height: 1; color: "#242938" }
+
+            // 专业工程与元数据导出栏
+            Text { text: "专业工程与元数据清单导出 (免重新渲染，一键快速生成)："; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
+
+            RowLayout {
+                Layout.fillWidth: true; spacing: 8
+
+                Button {
+                    text: "FCPXML 工程"
+                    ToolTip.text: "导出标准 FCPXML 1.9，可直接导入 DaVinci Resolve (达芬奇) 或 Final Cut Pro 继续精修"
+                    ToolTip.visible: hovered
+                    Layout.fillWidth: true; Layout.preferredHeight: 32
+                    onClicked: {
+                        var expCanvas = exportCanvasCombo.currentIndex === 0 ? root.getAutoMasterCanvas() : (exportCanvasCombo.currentIndex === 1 ? "horizontal" : "vertical")
+                        bridge.exportFcpxml(root.timelineClips, expCanvas, "")
+                    }
+                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#6366f1" }
+                    contentItem: Text { text: parent.text; color: "#a5b4fc"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Button {
+                    text: "元数据 (JSON)"
+                    ToolTip.text: "导出镜头出入点、色彩朝向、语音文本等完整 JSON 结构化数据"
+                    ToolTip.visible: hovered
+                    Layout.fillWidth: true; Layout.preferredHeight: 32
+                    onClicked: { bridge.exportMetadata(root.timelineClips, "json", "") }
+                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#0284c7" }
+                    contentItem: Text { text: parent.text; color: "#38bdf8"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Button {
+                    text: "元数据 (CSV)"
+                    ToolTip.text: "导出可在 Excel / Numbers 中直接查看的镜头明细表"
+                    ToolTip.visible: hovered
+                    Layout.fillWidth: true; Layout.preferredHeight: 32
+                    onClicked: { bridge.exportMetadata(root.timelineClips, "csv", "") }
+                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#059669" }
+                    contentItem: Text { text: parent.text; color: "#34d399"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+
+                Button {
+                    text: "SRT 字幕"
+                    ToolTip.text: "导出标准 SRT 独立字幕文件"
+                    ToolTip.visible: hovered
+                    Layout.preferredWidth: 76; Layout.preferredHeight: 32
+                    onClicked: { bridge.generateSrt(root.timelineClips, "") }
+                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#d97706" }
+                    contentItem: Text { text: parent.text; color: "#fbbf24"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; height: 1; color: "#242938" }
+
             ProgressBar { Layout.fillWidth: true; value: exportModal.progress / 100.0 }
             Text { text: exportModal.statusText; color: "#f1f5f9"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
+
             RowLayout {
                 Layout.fillWidth: true
                 Button {
@@ -3296,13 +3599,7 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
                 Button {
-                    text: "导出 SRT 字幕"
-                    onClicked: { bridge.generateSrt(root.timelineClips, "") }
-                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#38bdf8" }
-                    contentItem: Text { text: parent.text; color: "#38bdf8"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-                Button {
-                    text: "开始硬件加速渲染"
+                    text: "开始硬件加速渲染成片 (MP4)"
                     onClicked: {
                         var expCanvas = "horizontal"
                         if (exportCanvasCombo.currentIndex === 0) {
