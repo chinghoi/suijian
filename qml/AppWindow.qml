@@ -663,6 +663,8 @@ ApplicationWindow {
         }
 
         function onAiFinished(tasks) {
+            aiModal.progress = 0
+            aiModal.isPaused = false
             aiModal.close()
             root.pushUndoState("应用 AI 智能初筛结果")
             root.timelineClips = tasks
@@ -680,11 +682,13 @@ ApplicationWindow {
         }
 
         function onAiPaused(completed, total, reason) {
+            aiModal.isPaused = true
             aiModal.statusText = "任务已安全暂停 (" + reason + ") · 进度已留存 (" + completed + "/" + total + ")"
             statusBanner.show("初筛任务已安全暂存检查点，插回相机即可继续")
         }
 
         function onAiResumed() {
+            aiModal.isPaused = false
             statusBanner.show("已从断点继续执行 AI 任务")
         }
 
@@ -718,11 +722,13 @@ ApplicationWindow {
         }
 
         function onExportFinished(outPath) {
+            exportModal.progress = 0
             exportModal.close()
             statusBanner.show("导出成功: " + outPath)
         }
 
         function onExportFailed(err) {
+            exportModal.progress = 0
             exportModal.close()
             statusBanner.show("导出失败: " + err)
         }
@@ -1667,10 +1673,18 @@ ApplicationWindow {
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 6
                                     Button {
-                                        text: "暂停"
-                                        onClicked: bridge.pauseAiScreening("移动端主动暂停")
-                                        background: Rectangle { color: "#334155"; radius: 4 }
-                                        contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                        text: aiModal.isPaused ? "继续初筛" : "暂停"
+                                        onClicked: {
+                                            if (aiModal.isPaused) {
+                                                bridge.resumeAiScreening()
+                                                aiModal.isPaused = false
+                                            } else {
+                                                bridge.pauseAiScreening("移动端主动暂停")
+                                                aiModal.isPaused = true
+                                            }
+                                        }
+                                        background: Rectangle { color: aiModal.isPaused ? "#2563eb" : "#334155"; radius: 4 }
+                                        contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: aiModal.isPaused; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                                     }
                                     Button {
                                         text: "安全拔卡去录像"
@@ -1681,7 +1695,11 @@ ApplicationWindow {
                                     Item { Layout.fillWidth: true }
                                     Button {
                                         text: "中止取消"
-                                        onClicked: bridge.cancelCurrentJob()
+                                        onClicked: {
+                                            bridge.cancelCurrentJob()
+                                            aiModal.progress = 0
+                                            aiModal.isPaused = false
+                                        }
                                         background: Rectangle { color: "#7f1d1d"; radius: 4 }
                                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                                     }
@@ -1689,9 +1707,17 @@ ApplicationWindow {
                             }
                         }
 
-                        Text { text: "选择智能剪辑模型策略："; color: "#cbd5e1"; font.pixelSize: 12; font.bold: true }
+                        Text {
+                            text: "选择智能剪辑模型策略："
+                            color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
                         ComboBox {
-                            id: mobAiModeCombo; Layout.fillWidth: true
+                            id: mobAiModeCombo
+                            Layout.fillWidth: true
+                            enabled: !aiModal.isRunning
+                            opacity: enabled ? 1.0 : 0.45
                             model: [
                                 "深度多模态综合混合 (推荐 · 口播连贯 + 视觉防抖美学 + 静默剔除)",
                                 "口播智能粗剪 (Vlog/访谈：剔除废话重录 / 连贯保留 / 自动生成字幕)",
@@ -1702,15 +1728,25 @@ ApplicationWindow {
 
                         RowLayout {
                             Layout.fillWidth: true
-                            Text { text: "成片视频画幅方向："; color: "#cbd5e1"; font.pixelSize: 12; font.bold: true }
+                            Text {
+                                text: "成片视频画幅方向："
+                                color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
                             Item { Layout.fillWidth: true }
                             Text {
                                 text: "当前识别: " + (root.getAutoMasterCanvas() === "vertical" ? "9:16 竖屏" : "16:9 横屏")
-                                color: "#38bdf8"; font.pixelSize: 10; font.bold: true
+                                color: aiModal.isRunning ? "#64748b" : "#38bdf8"
+                                font.pixelSize: 10
+                                font.bold: true
                             }
                         }
                         ComboBox {
-                            id: mobAiCanvasCombo; Layout.fillWidth: true
+                            id: mobAiCanvasCombo
+                            Layout.fillWidth: true
+                            enabled: !aiModal.isRunning
+                            opacity: enabled ? 1.0 : 0.45
                             model: [
                                 "自动决定 (按所选视频真实拍摄方向智能自适应 · 推荐)",
                                 "3840×2160 16:9 横屏母带 (强制横屏)",
@@ -1724,9 +1760,17 @@ ApplicationWindow {
                             }
                         }
 
-                        Text { text: "成片节奏 / 期望时长："; color: "#cbd5e1"; font.pixelSize: 12; font.bold: true }
+                        Text {
+                            text: "成片节奏 / 期望时长："
+                            color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
                         ComboBox {
-                            id: mobTargetDurCombo; Layout.fillWidth: true
+                            id: mobTargetDurCombo
+                            Layout.fillWidth: true
+                            enabled: !aiModal.isRunning
+                            opacity: enabled ? 1.0 : 0.45
                             model: [
                                 "标准成片节奏 (约 3 ~ 5 分钟 · 完整叙事与空镜)",
                                 "短视频快节奏 (约 1 ~ 2 分钟 · 提取核心高光)",
@@ -1740,11 +1784,14 @@ ApplicationWindow {
                             Layout.preferredHeight: 46
                             Layout.topMargin: 4
                             text: {
-                                var effList = root.getSelectedPathsList()
-                                if (aiModal.progress > 0 && aiModal.progress < 100) return "初筛处理中..."
+                                if (aiModal.isRunning) {
+                                    if (aiModal.isPaused) return "初筛已暂停 (点击上方继续)"
+                                    return "AI 初筛全速进行中..."
+                                }
                                 return "开始 AI 智能初筛 (" + (root.selectedCount > 0 ? ("已选 " + root.selectedCount + " 个") : ("全部 " + root.mediaPool.length + " 个素材")) + ")"
                             }
-                            enabled: root.mediaPool.length > 0 && !(aiModal.progress > 0 && aiModal.progress < 100)
+                            enabled: root.mediaPool.length > 0 && !aiModal.isRunning
+                            opacity: enabled ? 1.0 : 0.45
                             onClicked: {
                                 var mode = "3"
                                 if (mobAiModeCombo.currentIndex === 0) mode = "3"
@@ -1764,14 +1811,23 @@ ApplicationWindow {
                                 root.masterCanvas = canvasMode
 
                                 aiModal.progress = 1
+                                aiModal.isPaused = false
                                 aiModal.statusText = "正在启动初筛管道..."
                                 bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
                             }
                             background: Rectangle {
-                                color: parent.enabled ? "#2563eb" : "#334155"
+                                color: parent.enabled ? "#2563eb" : "#222533"
+                                border.color: parent.enabled ? "#3b82f6" : "#334155"
                                 radius: 6
                             }
-                            contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 13; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            contentItem: Text {
+                                text: parent.text
+                                color: parent.enabled ? "#ffffff" : "#64748b"
+                                font.bold: true
+                                font.pixelSize: 13
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
                         }
 
                         Text {
@@ -3012,17 +3068,28 @@ ApplicationWindow {
 
         property real progress: 0.0
         property string statusText: "准备就绪"
+        readonly property bool isRunning: (progress > 0 && progress < 100)
+        property bool isPaused: false
 
         onAboutToShow: {
-            aiCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
+            if (!aiModal.isRunning) {
+                aiCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
+            }
         }
 
         ColumnLayout {
             anchors.fill: parent; spacing: 10
 
-            Text { text: "选择智能剪辑模型策略："; color: "#cbd5e1"; font.pixelSize: 12 }
+            Text {
+                text: "选择智能剪辑模型策略："
+                color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
+                font.pixelSize: 12
+            }
             ComboBox {
-                id: aiModeCombo; Layout.fillWidth: true
+                id: aiModeCombo
+                Layout.fillWidth: true
+                enabled: !aiModal.isRunning
+                opacity: enabled ? 1.0 : 0.45
                 model: [
                     "深度多模态综合混合 (推荐 · 口播连贯 + 视觉防抖美学 + 静默剔除)",
                     "口播智能粗剪 (Vlog/访谈：剔除废话重录 / 连贯保留 / 自动生成字幕)",
@@ -3033,17 +3100,25 @@ ApplicationWindow {
 
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: "视频方向与成片画幅："; color: "#cbd5e1"; font.pixelSize: 12 }
+                Text {
+                    text: "视频方向与成片画幅："
+                    color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
+                    font.pixelSize: 12
+                }
                 Item { Layout.fillWidth: true }
                 Text {
                     visible: aiCanvasCombo.currentIndex === 0
                     text: "已自动识别: " + (root.getAutoMasterCanvas() === "vertical" ? "9:16 竖屏" : "16:9 横屏")
-                    color: "#38bdf8"; font.pixelSize: 11; font.bold: true
+                    color: aiModal.isRunning ? "#64748b" : "#38bdf8"
+                    font.pixelSize: 11
+                    font.bold: true
                 }
             }
             ComboBox {
                 id: aiCanvasCombo
                 Layout.fillWidth: true
+                enabled: !aiModal.isRunning
+                opacity: enabled ? 1.0 : 0.45
                 model: [
                     "自动决定 (按所选视频真实拍摄方向智能自适应 · 推荐)",
                     "3840×2160 16:9 横屏母带 (强制横屏 · YouTube / B站 / 电脑与电视大屏)",
@@ -3057,9 +3132,16 @@ ApplicationWindow {
                 }
             }
 
-            Text { text: "目标成片节奏 / 期望时长："; color: "#cbd5e1"; font.pixelSize: 12 }
+            Text {
+                text: "目标成片节奏 / 期望时长："
+                color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
+                font.pixelSize: 12
+            }
             ComboBox {
-                id: targetDurationCombo; Layout.fillWidth: true
+                id: targetDurationCombo
+                Layout.fillWidth: true
+                enabled: !aiModal.isRunning
+                opacity: enabled ? 1.0 : 0.45
                 model: [
                     "标准成片节奏 (约 3 ~ 5 分钟 · 完整呈现事件叙事与精彩空镜)",
                     "短视频快节奏 (约 1 ~ 2 分钟 · 仅提取最高光核心镜头与金句)",
@@ -3075,6 +3157,8 @@ ApplicationWindow {
                 color: "#181a24"
                 border.color: "#2a2f42"
                 radius: 6
+                enabled: !aiModal.isRunning
+                opacity: enabled ? 1.0 : 0.45
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -3207,33 +3291,77 @@ ApplicationWindow {
                 spacing: 8
 
                 Button {
-                    text: "取消"
+                    text: aiModal.isRunning ? "中止初筛" : "取消"
                     onClicked: {
                         bridge.cancelCurrentJob()
+                        aiModal.progress = 0
+                        aiModal.isPaused = false
                         aiModal.close()
                     }
-                    background: Rectangle { color: "#334155"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-
-                Button {
-                    text: "暂停"
-                    onClicked: bridge.pauseAiScreening("用户主动暂停")
-                    background: Rectangle { color: "#475569"; radius: 4 }
+                    background: Rectangle { color: aiModal.isRunning ? "#7f1d1d" : "#334155"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
 
                 Button {
+                    text: aiModal.isPaused ? "继续初筛" : "暂停"
+                    enabled: aiModal.isRunning
+                    opacity: enabled ? 1.0 : 0.4
+                    onClicked: {
+                        if (aiModal.isPaused) {
+                            bridge.resumeAiScreening()
+                            aiModal.isPaused = false
+                        } else {
+                            bridge.pauseAiScreening("用户主动暂停")
+                            aiModal.isPaused = true
+                        }
+                    }
+                    background: Rectangle {
+                        color: !parent.enabled ? "#222533" : (aiModal.isPaused ? "#2563eb" : "#475569")
+                        radius: 4
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: parent.enabled ? "#ffffff" : "#64748b"
+                        font.pixelSize: 11
+                        font.bold: aiModal.isPaused
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                Button {
                     text: "安全拔卡去录像"
+                    enabled: aiModal.isRunning
+                    opacity: enabled ? 1.0 : 0.4
                     onClicked: bridge.safeEjectDevice()
-                    background: Rectangle { color: "#065f46"; radius: 4; border.color: "#10b981" }
-                    contentItem: Text { text: parent.text; color: "#6ee7b7"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle {
+                        color: parent.enabled ? "#065f46" : "#1a2e26"
+                        radius: 4
+                        border.color: parent.enabled ? "#10b981" : "#1e4033"
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: parent.enabled ? "#6ee7b7" : "#47705c"
+                        font.bold: true
+                        font.pixelSize: 11
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
 
                 Item { Layout.fillWidth: true }
 
                 Button {
-                    text: "开始 / 续接初筛"
+                    id: aiStartBtn
+                    text: {
+                        if (aiModal.isRunning) {
+                            if (aiModal.isPaused) return "初筛已暂停"
+                            return "初筛全速进行中..."
+                        }
+                        return "开始 / 续接初筛"
+                    }
+                    enabled: !aiModal.isRunning && root.mediaPool.length > 0
+                    opacity: enabled ? 1.0 : 0.45
                     onClicked: {
                         var mode = "3"
                         if (aiModeCombo.currentIndex === 0) mode = "3"
@@ -3265,10 +3393,24 @@ ApplicationWindow {
                         }
                         root.masterCanvas = canvasMode
 
+                        aiModal.progress = 1
+                        aiModal.isPaused = false
+                        aiModal.statusText = "正在启动初筛管道..."
                         bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
                     }
-                    background: Rectangle { color: "#4f46e5"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle {
+                        color: parent.enabled ? "#2563eb" : "#222533"
+                        border.color: parent.enabled ? "#3b82f6" : "#334155"
+                        radius: 4
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: parent.enabled ? "#ffffff" : "#64748b"
+                        font.bold: true
+                        font.pixelSize: 11
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
             }
         }
@@ -3479,9 +3621,12 @@ ApplicationWindow {
 
         property real progress: 0.0
         property string statusText: "准备就绪"
+        readonly property bool isRunning: (progress > 0 && progress < 100)
 
         onAboutToShow: {
-            exportCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
+            if (!exportModal.isRunning) {
+                exportCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
+            }
         }
 
         ColumnLayout {
@@ -3493,16 +3638,24 @@ ApplicationWindow {
 
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: "导出画幅母带标准："; color: "#cbd5e1"; font.pixelSize: 12 }
+                Text {
+                    text: "导出画幅母带标准："
+                    color: exportModal.isRunning ? "#64748b" : "#cbd5e1"
+                    font.pixelSize: 12
+                }
                 Item { Layout.fillWidth: true }
                 Text {
                     visible: exportCanvasCombo.currentIndex === 0
                     text: "已自动识别: " + (root.getAutoMasterCanvas() === "vertical" ? "9:16 竖屏" : "16:9 横屏")
-                    color: "#38bdf8"; font.pixelSize: 11; font.bold: true
+                    color: exportModal.isRunning ? "#64748b" : "#38bdf8"
+                    font.pixelSize: 11
+                    font.bold: true
                 }
             }
             ComboBox {
                 id: exportCanvasCombo; Layout.fillWidth: true
+                enabled: !exportModal.isRunning
+                opacity: enabled ? 1.0 : 0.45
                 model: [
                     "自动决定 (按时间线视频真实拍摄方向智能自适应 · 推荐)",
                     "3840×2160 16:9 横屏母带 (强制横屏 · YouTube / B站 / 电脑大屏)",
@@ -3516,9 +3669,15 @@ ApplicationWindow {
                 }
             }
 
-            Text { text: "色彩与编码规格："; color: "#cbd5e1"; font.pixelSize: 12 }
+            Text {
+                text: "色彩与编码规格："
+                color: exportModal.isRunning ? "#64748b" : "#cbd5e1"
+                font.pixelSize: 12
+            }
             ComboBox {
                 id: exportColorCombo; Layout.fillWidth: true
+                enabled: !exportModal.isRunning
+                opacity: enabled ? 1.0 : 0.45
                 model: [
                     "10-Bit HDR (Apple Silicon ProRes / BT.2020 HLG / 65Mbps 原色母带)",
                     "8-Bit SDR (Rec.709 / 35Mbps 标准网络快速分享)"
@@ -3532,10 +3691,17 @@ ApplicationWindow {
             Rectangle { Layout.fillWidth: true; height: 1; color: "#242938" }
 
             // 专业工程与元数据导出栏
-            Text { text: "专业工程与元数据清单导出 (免重新渲染，一键快速生成)："; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
+            Text {
+                text: "专业工程与元数据清单导出 (免重新渲染，一键快速生成)："
+                color: exportModal.isRunning ? "#64748b" : "#cbd5e1"
+                font.pixelSize: 11
+                font.bold: true
+            }
 
             RowLayout {
                 Layout.fillWidth: true; spacing: 8
+                enabled: !exportModal.isRunning
+                opacity: enabled ? 1.0 : 0.45
 
                 Button {
                     text: "FCPXML 工程"
@@ -3589,17 +3755,20 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 Button {
-                    text: exportModal.progress > 0 && exportModal.progress < 100 ? "中止导出" : "取消"
+                    text: exportModal.isRunning ? "中止导出" : "取消"
                     onClicked: {
                         bridge.cancelCurrentJob()
+                        exportModal.progress = 0
                         exportModal.close()
                     }
-                    background: Rectangle { color: "#334155"; radius: 4 }
+                    background: Rectangle { color: exportModal.isRunning ? "#7f1d1d" : "#334155"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
                 Item { Layout.fillWidth: true }
                 Button {
-                    text: "开始硬件加速渲染成片 (MP4)"
+                    text: exportModal.isRunning ? "硬件加速渲染压制中..." : "开始硬件加速渲染成片 (MP4)"
+                    enabled: !exportModal.isRunning && root.timelineClips.length > 0
+                    opacity: enabled ? 1.0 : 0.45
                     onClicked: {
                         var expCanvas = "horizontal"
                         if (exportCanvasCombo.currentIndex === 0) {
@@ -3610,10 +3779,22 @@ ApplicationWindow {
                             expCanvas = "vertical"
                         }
                         root.masterCanvas = expCanvas
+                        exportModal.progress = 1
+                        exportModal.statusText = "正在启动硬件加速导出管道..."
                         bridge.startExport(root.timelineClips, expCanvas, root.targetColor)
                     }
-                    background: Rectangle { color: "#2563eb"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle {
+                        color: parent.enabled ? "#2563eb" : "#222533"
+                        border.color: parent.enabled ? "#3b82f6" : "#334155"
+                        radius: 4
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: parent.enabled ? "#ffffff" : "#64748b"
+                        font.bold: true
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
             }
         }
