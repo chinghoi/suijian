@@ -212,7 +212,7 @@ jobs:
       - name: Install Qt 6 Development Packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y qt6-base-dev qt6-declarative-dev libqt6multimedia6-dev cmake ninja-build libgl1-mesa-dev
+          sudo apt-get install -y qt6-base-dev qt6-declarative-dev qt6-multimedia-dev cmake ninja-build libgl1-mesa-dev
 
       - name: Configure CMake
         run: |
