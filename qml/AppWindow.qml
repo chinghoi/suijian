@@ -658,11 +658,13 @@ ApplicationWindow {
         }
 
         function onAiProgress(percent, stepText) {
+            aiModal.isRunning = true
             aiModal.progress = percent
             aiModal.statusText = stepText
         }
 
         function onAiFinished(tasks) {
+            aiModal.isRunning = false
             aiModal.progress = 0
             aiModal.isPaused = false
             aiModal.close()
@@ -682,12 +684,14 @@ ApplicationWindow {
         }
 
         function onAiPaused(completed, total, reason) {
+            aiModal.isRunning = true
             aiModal.isPaused = true
             aiModal.statusText = "任务已安全暂停 (" + reason + ") · 进度已留存 (" + completed + "/" + total + ")"
             statusBanner.show("初筛任务已安全暂存检查点，插回相机即可继续")
         }
 
         function onAiResumed() {
+            aiModal.isRunning = true
             aiModal.isPaused = false
             statusBanner.show("已从断点继续执行 AI 任务")
         }
@@ -717,17 +721,20 @@ ApplicationWindow {
         }
 
         function onExportProgress(percent, stepText) {
+            exportModal.isRunning = true
             exportModal.progress = percent
             exportModal.statusText = stepText
         }
 
         function onExportFinished(outPath) {
+            exportModal.isRunning = false
             exportModal.progress = 0
             exportModal.close()
             statusBanner.show("导出成功: " + outPath)
         }
 
         function onExportFailed(err) {
+            exportModal.isRunning = false
             exportModal.progress = 0
             exportModal.close()
             statusBanner.show("导出失败: " + err)
@@ -1654,18 +1661,36 @@ ApplicationWindow {
 
                         // 运行状态卡片 (初筛进行中展示)
                         Rectangle {
-                            visible: aiModal.progress > 0 && aiModal.progress < 100
+                            visible: aiModal.isRunning
                             Layout.fillWidth: true
                             Layout.preferredHeight: 120
-                            color: "#182032"; border.color: "#3b82f6"; border.width: 1.5; radius: 8
+                            color: aiModal.isPaused ? "#241808" : "#182032"
+                            border.color: aiModal.isPaused ? "#f59e0b" : "#3b82f6"
+                            border.width: 1.5
+                            radius: 8
 
                             ColumnLayout {
                                 anchors.fill: parent; anchors.margins: 10; spacing: 6
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Text { text: "AI 智能初筛全速进行中"; color: "#38bdf8"; font.bold: true; font.pixelSize: 13 }
+                                    Rectangle {
+                                        width: 8; height: 8; radius: 4
+                                        color: aiModal.isPaused ? "#fbbf24" : "#34d399"
+                                        SequentialAnimation on opacity {
+                                            running: aiModal.isRunning && !aiModal.isPaused
+                                            loops: Animation.Infinite
+                                            NumberAnimation { to: 0.3; duration: 600 }
+                                            NumberAnimation { to: 1.0; duration: 600 }
+                                        }
+                                    }
+                                    Text {
+                                        text: aiModal.isPaused ? "任务已安全暂停" : "AI 智能初筛全速进行中"
+                                        color: aiModal.isPaused ? "#fde68a" : "#38bdf8"
+                                        font.bold: true
+                                        font.pixelSize: 13
+                                    }
                                     Item { Layout.fillWidth: true }
-                                    Text { text: Math.round(aiModal.progress) + "%"; color: "#60a5fa"; font.bold: true; font.pixelSize: 13 }
+                                    Text { text: Math.round(aiModal.progress) + "%"; color: aiModal.isPaused ? "#fbbf24" : "#60a5fa"; font.bold: true; font.pixelSize: 13 }
                                 }
                                 ProgressBar { Layout.fillWidth: true; value: aiModal.progress / 100.0 }
                                 Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
@@ -1694,9 +1719,10 @@ ApplicationWindow {
                                     }
                                     Item { Layout.fillWidth: true }
                                     Button {
-                                        text: "中止取消"
+                                        text: "中止初筛"
                                         onClicked: {
                                             bridge.cancelCurrentJob()
+                                            aiModal.isRunning = false
                                             aiModal.progress = 0
                                             aiModal.isPaused = false
                                         }
@@ -1810,6 +1836,7 @@ ApplicationWindow {
                                 else canvasMode = "vertical"
                                 root.masterCanvas = canvasMode
 
+                                aiModal.isRunning = true
                                 aiModal.progress = 1
                                 aiModal.isPaused = false
                                 aiModal.statusText = "正在启动初筛管道..."
@@ -3056,7 +3083,12 @@ ApplicationWindow {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            bridge.cancelCurrentJob()
+                            if (aiModal.isRunning) {
+                                bridge.cancelCurrentJob()
+                                aiModal.isRunning = false
+                                aiModal.progress = 0
+                                aiModal.isPaused = false
+                            }
                             aiModal.close()
                         }
                     }
@@ -3068,7 +3100,7 @@ ApplicationWindow {
 
         property real progress: 0.0
         property string statusText: "准备就绪"
-        readonly property bool isRunning: (progress > 0 && progress < 100)
+        property bool isRunning: false
         property bool isPaused: false
 
         onAboutToShow: {
@@ -3283,8 +3315,100 @@ ApplicationWindow {
                 }
             }
 
-            ProgressBar { Layout.fillWidth: true; value: aiModal.progress / 100.0 }
-            Text { text: aiModal.statusText; color: "#94a3b8"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
+            // 实时运行状态与进度看板
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 64
+                color: aiModal.isRunning ? (aiModal.isPaused ? "#241808" : "#0d1b2a") : "#141722"
+                border.color: aiModal.isRunning ? (aiModal.isPaused ? "#d97706" : "#2563eb") : "#2a2f42"
+                border.width: aiModal.isRunning ? 1.5 : 1
+                radius: 6
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 5
+
+                    RowLayout {
+                        Layout.fillWidth: true
+
+                        // 状态徽章 (运行中 / 暂停 / 待机就绪)
+                        Rectangle {
+                            height: 20
+                            width: statusBadgeText.implicitWidth + 18
+                            radius: 10
+                            color: !aiModal.isRunning ? "#1e293b" : (aiModal.isPaused ? "#78350f" : "#064e3b")
+                            border.color: !aiModal.isRunning ? "#475569" : (aiModal.isPaused ? "#f59e0b" : "#10b981")
+
+                            RowLayout {
+                                anchors.centerIn: parent
+                                spacing: 4
+                                Rectangle {
+                                    width: 6
+                                    height: 6
+                                    radius: 3
+                                    color: !aiModal.isRunning ? "#94a3b8" : (aiModal.isPaused ? "#fbbf24" : "#34d399")
+
+                                    SequentialAnimation on opacity {
+                                        running: aiModal.isRunning && !aiModal.isPaused
+                                        loops: Animation.Infinite
+                                        NumberAnimation { to: 0.3; duration: 600 }
+                                        NumberAnimation { to: 1.0; duration: 600 }
+                                    }
+                                }
+                                Text {
+                                    id: statusBadgeText
+                                    text: !aiModal.isRunning ? "待机就绪" : (aiModal.isPaused ? "任务已暂停" : "初筛全速进行中")
+                                    color: !aiModal.isRunning ? "#94a3b8" : (aiModal.isPaused ? "#fde68a" : "#6ee7b7")
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        // 实时百分比显示
+                        Text {
+                            visible: aiModal.isRunning
+                            text: Math.round(aiModal.progress) + "%"
+                            color: aiModal.isPaused ? "#fbbf24" : "#38bdf8"
+                            font.bold: true
+                            font.pixelSize: 13
+                        }
+                    }
+
+                    // 进度条 (平滑动画)
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 6
+                        radius: 3
+                        color: "#1e2433"
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: Math.max(0, Math.min(parent.width, parent.width * (aiModal.progress / 100.0)))
+                            radius: 3
+                            color: aiModal.isPaused ? "#f59e0b" : "#3b82f6"
+
+                            Behavior on width {
+                                NumberAnimation { duration: 180 }
+                            }
+                        }
+                    }
+
+                    // 详细步骤文本
+                    Text {
+                        text: aiModal.statusText
+                        color: aiModal.isRunning ? (aiModal.isPaused ? "#fbbf24" : "#e2e8f0") : "#94a3b8"
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        elide: Text.ElideMiddle
+                    }
+                }
+            }
 
             RowLayout {
                 Layout.fillWidth: true
@@ -3294,12 +3418,24 @@ ApplicationWindow {
                     text: aiModal.isRunning ? "中止初筛" : "取消"
                     onClicked: {
                         bridge.cancelCurrentJob()
+                        aiModal.isRunning = false
                         aiModal.progress = 0
                         aiModal.isPaused = false
                         aiModal.close()
                     }
-                    background: Rectangle { color: aiModal.isRunning ? "#7f1d1d" : "#334155"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle {
+                        color: aiModal.isRunning ? "#7f1d1d" : "#334155"
+                        border.color: aiModal.isRunning ? "#ef4444" : "#475569"
+                        radius: 4
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: "#ffffff"
+                        font.pixelSize: 11
+                        font.bold: aiModal.isRunning
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
 
                 Button {
@@ -3316,7 +3452,8 @@ ApplicationWindow {
                         }
                     }
                     background: Rectangle {
-                        color: !parent.enabled ? "#222533" : (aiModal.isPaused ? "#2563eb" : "#475569")
+                        color: !parent.enabled ? "#222533" : (aiModal.isPaused ? "#2563eb" : "#334155")
+                        border.color: !parent.enabled ? "#334155" : (aiModal.isPaused ? "#3b82f6" : "#475569")
                         radius: 4
                     }
                     contentItem: Text {
@@ -3355,7 +3492,7 @@ ApplicationWindow {
                     id: aiStartBtn
                     text: {
                         if (aiModal.isRunning) {
-                            if (aiModal.isPaused) return "初筛已暂停"
+                            if (aiModal.isPaused) return "初筛已暂停 (请点击左侧「继续初筛」)"
                             return "初筛全速进行中..."
                         }
                         return "开始 / 续接初筛"
@@ -3393,13 +3530,14 @@ ApplicationWindow {
                         }
                         root.masterCanvas = canvasMode
 
-                        aiModal.progress = 1
+                        aiModal.isRunning = true
+                        aiModal.progress = 1.0
                         aiModal.isPaused = false
                         aiModal.statusText = "正在启动初筛管道..."
                         bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
                     }
                     background: Rectangle {
-                        color: parent.enabled ? "#2563eb" : "#222533"
+                        color: parent.enabled ? "#2563eb" : "#1e2433"
                         border.color: parent.enabled ? "#3b82f6" : "#334155"
                         radius: 4
                     }
@@ -3611,7 +3749,11 @@ ApplicationWindow {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            bridge.cancelCurrentJob()
+                            if (exportModal.isRunning) {
+                                bridge.cancelCurrentJob()
+                                exportModal.isRunning = false
+                                exportModal.progress = 0
+                            }
                             exportModal.close()
                         }
                     }
@@ -3621,7 +3763,7 @@ ApplicationWindow {
 
         property real progress: 0.0
         property string statusText: "准备就绪"
-        readonly property bool isRunning: (progress > 0 && progress < 100)
+        property bool isRunning: false
 
         onAboutToShow: {
             if (!exportModal.isRunning) {
@@ -3749,8 +3891,86 @@ ApplicationWindow {
 
             Rectangle { Layout.fillWidth: true; height: 1; color: "#242938" }
 
-            ProgressBar { Layout.fillWidth: true; value: exportModal.progress / 100.0 }
-            Text { text: exportModal.statusText; color: "#f1f5f9"; font.pixelSize: 11; Layout.fillWidth: true; elide: Text.ElideMiddle }
+            // 实时导出状态看板
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 60
+                color: exportModal.isRunning ? "#0d1b2a" : "#141722"
+                border.color: exportModal.isRunning ? "#2563eb" : "#2a2f42"
+                border.width: exportModal.isRunning ? 1.5 : 1
+                radius: 6
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Rectangle {
+                            height: 18
+                            width: expBadgeText.implicitWidth + 16
+                            radius: 9
+                            color: exportModal.isRunning ? "#064e3b" : "#1e293b"
+                            border.color: exportModal.isRunning ? "#10b981" : "#475569"
+
+                            RowLayout {
+                                anchors.centerIn: parent
+                                spacing: 4
+                                Rectangle {
+                                    width: 6; height: 6; radius: 3
+                                    color: exportModal.isRunning ? "#34d399" : "#94a3b8"
+                                    SequentialAnimation on opacity {
+                                        running: exportModal.isRunning
+                                        loops: Animation.Infinite
+                                        NumberAnimation { to: 0.3; duration: 600 }
+                                        NumberAnimation { to: 1.0; duration: 600 }
+                                    }
+                                }
+                                Text {
+                                    id: expBadgeText
+                                    text: exportModal.isRunning ? "硬件加速渲染中" : "待机就绪"
+                                    color: exportModal.isRunning ? "#6ee7b7" : "#94a3b8"
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                        Text {
+                            visible: exportModal.isRunning
+                            text: Math.round(exportModal.progress) + "%"
+                            color: "#38bdf8"
+                            font.bold: true
+                            font.pixelSize: 12
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 5
+                        radius: 2.5
+                        color: "#1e2433"
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: Math.max(0, Math.min(parent.width, parent.width * (exportModal.progress / 100.0)))
+                            radius: 2.5
+                            color: "#3b82f6"
+                            Behavior on width { NumberAnimation { duration: 180 } }
+                        }
+                    }
+
+                    Text {
+                        text: exportModal.statusText
+                        color: exportModal.isRunning ? "#e2e8f0" : "#94a3b8"
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        elide: Text.ElideMiddle
+                    }
+                }
+            }
 
             RowLayout {
                 Layout.fillWidth: true
@@ -3758,11 +3978,22 @@ ApplicationWindow {
                     text: exportModal.isRunning ? "中止导出" : "取消"
                     onClicked: {
                         bridge.cancelCurrentJob()
+                        exportModal.isRunning = false
                         exportModal.progress = 0
                         exportModal.close()
                     }
-                    background: Rectangle { color: exportModal.isRunning ? "#7f1d1d" : "#334155"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle {
+                        color: exportModal.isRunning ? "#7f1d1d" : "#334155"
+                        border.color: exportModal.isRunning ? "#ef4444" : "#475569"
+                        radius: 4
+                    }
+                    contentItem: Text {
+                        text: parent.text
+                        color: "#ffffff"
+                        font.bold: exportModal.isRunning
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
                 Item { Layout.fillWidth: true }
                 Button {
@@ -3779,6 +4010,7 @@ ApplicationWindow {
                             expCanvas = "vertical"
                         }
                         root.masterCanvas = expCanvas
+                        exportModal.isRunning = true
                         exportModal.progress = 1
                         exportModal.statusText = "正在启动硬件加速导出管道..."
                         bridge.startExport(root.timelineClips, expCanvas, root.targetColor)

@@ -516,7 +516,7 @@ class AiScreeningWorker(QThread):
         start_idx, restored_tasks = load_ai_checkpoint(self.selected_paths)
         if start_idx > 0 and len(restored_tasks) > 0:
             self._tasks = restored_tasks
-            self.progress.emit((start_idx / total) * 100.0, f"发现已留存的初筛检查点，直接从第 [{start_idx+1}/{total}] 个视频续接！")
+            self.progress.emit(max(1.0, (start_idx / total) * 100.0), f"发现已留存的初筛检查点，直接从第 [{start_idx+1}/{total}] 个视频续接！")
         else:
             self._tasks = []
             start_idx = 0
@@ -538,7 +538,8 @@ class AiScreeningWorker(QThread):
             if not meta:
                 continue
 
-            self.progress.emit((idx / total) * 100.0, f"AI 智能筛选镜头 [{idx+1}/{total}]: {meta['filename']}")
+            p_init = max(1.0, (idx / total) * 100.0)
+            self.progress.emit(p_init, f"[{idx+1}/{total}] 准备初筛分析: {meta['filename']}")
             dur = meta["duration"]
 
             # ===== 1. 口播模式 (mode 4) 或 深度综合多模态混合模式 (mode 3) =====
@@ -546,8 +547,8 @@ class AiScreeningWorker(QThread):
             annotated_segs = []
             if self.ai_mode in ("3", "4") and dur > 2.0:
                 def _speech_progress(pct, msg):
-                    overall = ((idx + pct * 0.6) / total) * 100.0
-                    self.progress.emit(overall, msg)
+                    overall = max(1.0, min(99.0, ((idx + pct * 0.6) / total) * 100.0))
+                    self.progress.emit(overall, f"[{idx+1}/{total}] {msg}")
 
                 speech_clips, annotated_segs = run_speech_pipeline(
                     path, meta, progress_callback=_speech_progress
@@ -626,8 +627,10 @@ class AiScreeningWorker(QThread):
             scenic_blocks = []
 
             if self.ai_mode in ("2", "3") and dur > 3.0:
+                p_sil = max(1.0, min(99.0, ((idx + 0.35) / total) * 100.0))
+                self.progress.emit(p_sil, f"[{idx+1}/{total}] 分析音频静音与人声区间: {meta['filename']}")
                 try:
-                    cmd_s = ['ffmpeg', '-i', path, '-af', 'silencedetect=noise=-30dB:d=0.8', '-f', 'null', '-']
+                    cmd_s = ['ffmpeg', '-y', '-i', path, '-map', '0:a:0', '-af', 'silencedetect=noise=-30dB:d=0.8', '-f', 'null', '-']
                     out_s = subprocess.run(cmd_s, stderr=subprocess.PIPE, text=True).stderr
                     silences = []
                     for line in out_s.split('\n'):
@@ -651,6 +654,8 @@ class AiScreeningWorker(QThread):
 
             # CoreML / 视觉审美分析 (模式 1，或模式 3 无人声时的兜底)
             if self.ai_mode in ("1", "3") and os.path.exists(ANALYZER_BIN):
+                p_vis = max(1.0, min(99.0, ((idx + 0.65) / total) * 100.0))
+                self.progress.emit(p_vis, f"[{idx+1}/{total}] 评估视觉画面与稳定构图: {meta['filename']}")
                 sample_step = max(8.0, dur / 6.0)
                 sp_times = [t for t in range(2, int(max(3, dur - 2)), int(sample_step))]
                 for sp in sp_times:

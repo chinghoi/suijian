@@ -33,13 +33,13 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 # ============================================================
 
 def extract_audio_wav(video_path, output_wav=None):
-    """从视频中提取 16kHz 单声道 WAV 音频"""
+    """从视频中提取 16kHz 单声道 WAV 音频 (高速流式提取，忽略视频轨)"""
     if output_wav is None:
         output_wav = os.path.join(tempfile.mkdtemp(prefix="suijian_speech_"), "audio.wav")
     os.makedirs(os.path.dirname(output_wav), exist_ok=True)
     cmd = [
         'ffmpeg', '-y', '-i', video_path,
-        '-vn', '-acodec', 'pcm_s16le',
+        '-map', '0:a:0', '-c:a', 'pcm_s16le',
         '-ar', '16000', '-ac', '1',
         output_wav
     ]
@@ -53,13 +53,15 @@ def extract_audio_wav(video_path, output_wav=None):
 # 第二层: VAD 静音检测 (FFmpeg silencedetect, 无额外依赖)
 # ============================================================
 
-def detect_voice_segments(video_path, noise_db=-30, min_silence_dur=0.6, min_speech_dur=0.3):
+def detect_voice_segments(audio_or_video_path, noise_db=-30, min_silence_dur=0.6, min_speech_dur=0.3):
     """
     基于 FFmpeg silencedetect 检测人声活跃区间。
+    可直接在提取的 wav 或原视频上高速检测。
     返回 [(start, end), ...] 列表，单位秒。
     """
     cmd = [
-        'ffmpeg', '-i', video_path,
+        'ffmpeg', '-y', '-i', audio_or_video_path,
+        '-vn',
         '-af', f'silencedetect=noise={noise_db}dB:d={min_silence_dur}',
         '-f', 'null', '-'
     ]
@@ -87,8 +89,8 @@ def detect_voice_segments(video_path, noise_db=-30, min_silence_dur=0.6, min_spe
             except (ValueError, IndexError):
                 pass
 
-    # 获取视频总时长
-    duration = get_duration(video_path)
+    # 获取音频/视频总时长
+    duration = get_duration(audio_or_video_path)
     if duration <= 0:
         return []
 
@@ -558,34 +560,36 @@ def run_speech_pipeline(video_path, video_meta, progress_callback=None):
     """
     filename = video_meta.get("filename", os.path.basename(video_path))
 
-    # Step 1: VAD 检测
+    # Step 1: 极速流式提取音频
     if progress_callback:
-        progress_callback(0.1, f"语音活动检测: {filename}")
+        progress_callback(0.15, f"提取音频流: {filename}")
 
-    voice_segments = detect_voice_segments(video_path)
-
-    if not voice_segments:
-        # 无人声, 直接返回空
-        return [], []
-
-    # Step 2: ASR 转文字
-    if progress_callback:
-        progress_callback(0.3, f"语音转文字 (系统引擎): {filename}")
-
-    # 提取音频
     wav_path = extract_audio_wav(video_path)
     if not wav_path:
-        # 无法提取音频, 回退到 VAD-only 模式
-        clips = _vad_only_clips(voice_segments, video_path, video_meta)
-        return clips, []
+        return [], []
+
+    # Step 2: VAD 人声检测 (直接在本地 16kHz wav 上检测，毫秒级快速完成)
+    if progress_callback:
+        progress_callback(0.35, f"分析语音停顿区间: {filename}")
+
+    voice_segments = detect_voice_segments(wav_path)
+    if not voice_segments:
+        try:
+            os.remove(wav_path)
+            os.rmdir(os.path.dirname(wav_path))
+        except Exception:
+            pass
+        return [], []
+
+    # Step 3: ASR 语音转文字
+    if progress_callback:
+        progress_callback(0.55, f"转录文本与字幕: {filename}")
 
     # 尝试 macOS 原生 ASR
     word_segments = transcribe_with_system_speech(wav_path)
 
     # macOS 原生失败则尝试 whisper.cpp 兜底
     if not word_segments:
-        if progress_callback:
-            progress_callback(0.4, f"尝试 whisper.cpp 兜底转写: {filename}")
         word_segments = transcribe_with_whisper_cpp(wav_path)
 
     # 清理临时音频
@@ -596,23 +600,23 @@ def run_speech_pipeline(video_path, video_meta, progress_callback=None):
         pass
 
     if not word_segments:
-        # ASR 全部失败, 回退到纯 VAD 模式
+        # ASR 未生成文字, 自动回退到纯 VAD 连贯人声切片模式
         clips = _vad_only_clips(voice_segments, video_path, video_meta)
         return clips, []
 
-    # Step 3: 智能清洗
+    # Step 4: 智能清洗
     if progress_callback:
-        progress_callback(0.6, f"口播智能清洗 (废句消除): {filename}")
+        progress_callback(0.75, f"智能清洗 (消除废句重录): {filename}")
 
     cleaned = clean_speech_segments(word_segments)
 
-    # Step 4: 合并为句子
+    # Step 5: 合并为句子与生成字幕
     if progress_callback:
-        progress_callback(0.8, f"语句合并与字幕生成: {filename}")
+        progress_callback(0.90, f"编排成片镜头: {filename}")
 
     sentences = merge_to_sentences(cleaned)
 
-    # Step 5: 生成剪辑片段
+    # Step 6: 生成最终剪辑片段
     clips = speech_segments_to_clips(sentences, video_path, video_meta)
 
     return clips, cleaned
