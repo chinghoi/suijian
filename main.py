@@ -13,6 +13,10 @@ def main():
     app.setApplicationName("DJI智能剪辑大师 Pro")
     app.setOrganizationName("DJI_Editor")
 
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+
     engine = QQmlApplicationEngine()
     bridge = EditorBridge()
     app.aboutToQuit.connect(bridge.close)

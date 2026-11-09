@@ -402,38 +402,18 @@ ApplicationWindow {
                 anchors.rightMargin: root.isMobileMode ? 10 : 16
                 spacing: root.isMobileMode ? 8 : 10
 
+                Image {
+                    source: "../assets/icon.png"
+                    Layout.preferredWidth: 26
+                    Layout.preferredHeight: 26
+                    fillMode: Image.PreserveAspectFit
+                }
+
                 Text {
-                    text: root.isMobileMode ? "🎬 DJI 剪辑 Pro" : "🎬 DJI 智能剪辑大师 Pro"
+                    text: root.isMobileMode ? "DJI 剪辑 Pro" : "DJI 智能剪辑大师 Pro"
                     color: "#ffffff"
                     font.bold: true
                     font.pixelSize: root.isMobileMode ? 14 : 15
-                }
-
-                // 快捷导入按钮 (桌面端顶栏直达)
-                RowLayout {
-                    visible: !root.isMobileMode
-                    spacing: 6
-
-                    Button {
-                        text: "📁 选目录"
-                        onClicked: folderDialog.open()
-                        background: Rectangle { color: "#1e2436"; radius: 4; border.color: "#334155" }
-                        contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    }
-
-                    Button {
-                        text: "🎬 选视频 (多选)"
-                        onClicked: fileDialog.open()
-                        background: Rectangle { color: "#1e2436"; radius: 4; border.color: "#334155" }
-                        contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    }
-
-                    Button {
-                        text: "🔄 扫相机"
-                        onClicked: bridge.detectDji()
-                        background: Rectangle { color: "#1e2436"; radius: 4; border.color: "#334155" }
-                        contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    }
                 }
 
                 Item { Layout.fillWidth: true }
@@ -459,6 +439,16 @@ ApplicationWindow {
                             font.bold: true
                         }
                     }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                // AI 智能初筛按钮
+                Button {
+                    text: "✨ AI 智能初筛"
+                    onClicked: aiModal.open()
+                    background: Rectangle { color: parent.hovered ? "#4338ca" : "#3730a3"; radius: 5 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
 
                 // 导出大按钮
@@ -725,38 +715,31 @@ ApplicationWindow {
                     visible: root.mobileTab === 1
                     spacing: 4
 
-                    // 移动端快速导入操作条
+                    // 移动端素材池顶栏 (仅在有素材时展示；空态时不重复堆叠按键)
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 38
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 38
                         color: "#161822"
                         RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 8; anchors.rightMargin: 8
-                            spacing: 6
-
-                            Button {
-                                text: "📁 选目录"
-                                Layout.fillWidth: true; Layout.preferredHeight: 28
-                                onClicked: folderDialog.open()
-                                background: Rectangle { color: "#1e293b"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            anchors.fill: parent; anchors.leftMargin: 10; anchors.rightMargin: 10
+                            Text {
+                                text: "📁 素材池 (" + root.mediaPool.length + ")"
+                                color: "#ffffff"; font.bold: true; font.pixelSize: 12
                             }
-
+                            Item { Layout.fillWidth: true }
                             Button {
-                                text: "🎬 选视频"
-                                Layout.fillWidth: true; Layout.preferredHeight: 28
-                                onClicked: fileDialog.open()
+                                text: "+ 导入 ▾"
+                                Layout.preferredHeight: 24
+                                onClicked: mobileImportMenu.open()
                                 background: Rectangle { color: "#1e293b"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-
-                            Button {
-                                text: "🔄 扫相机"
-                                Layout.fillWidth: true; Layout.preferredHeight: 28
-                                onClicked: bridge.detectDji()
-                                background: Rectangle { color: "#1e3a8a"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+
+                                Menu {
+                                    id: mobileImportMenu
+                                    MenuItem { text: "📁 导入视频文件夹..."; onTriggered: folderDialog.open() }
+                                    MenuItem { text: "🎬 选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
+                                    MenuItem { text: "🔄 重新检测相机卡"; onTriggered: bridge.detectDji() }
+                                }
                             }
                         }
                     }
@@ -1004,36 +987,32 @@ ApplicationWindow {
                 ColumnLayout {
                     anchors.fill: parent; spacing: 0
 
-                    // 顶部快捷导入工具栏
+                    // 仅在有素材时展示简洁顶栏与加号菜单 (空态时不重复堆叠按键)
                     Rectangle {
-                        Layout.fillWidth: true; Layout.preferredHeight: 44
+                        visible: root.mediaPool.length > 0
+                        Layout.fillWidth: true; Layout.preferredHeight: 38
                         color: "#161822"; border.color: "#1f222e"; border.width: 1
 
                         RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
-
-                            Button {
-                                text: "📁 选文件夹"
-                                Layout.fillWidth: true; Layout.preferredHeight: 28
-                                onClicked: folderDialog.open()
-                                background: Rectangle { color: "#1e293b"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12
+                            Text {
+                                text: "📁 素材媒体池 (" + root.mediaPool.length + ")"
+                                color: "#ffffff"; font.bold: true; font.pixelSize: 12
                             }
-
+                            Item { Layout.fillWidth: true }
                             Button {
-                                text: "🎬 选文件"
-                                Layout.fillWidth: true; Layout.preferredHeight: 28
-                                onClicked: fileDialog.open()
+                                text: "+ 导入 ▾"
+                                Layout.preferredHeight: 24
+                                onClicked: desktopImportMenu.open()
                                 background: Rectangle { color: "#1e293b"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-
-                            Button {
-                                text: "🔄 扫相机"
-                                Layout.fillWidth: true; Layout.preferredHeight: 28
-                                onClicked: bridge.detectDji()
-                                background: Rectangle { color: "#1e3a8a"; radius: 4 }
                                 contentItem: Text { text: parent.text; color: "#93c5fd"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+
+                                Menu {
+                                    id: desktopImportMenu
+                                    MenuItem { text: "📁 导入视频文件夹..."; onTriggered: folderDialog.open() }
+                                    MenuItem { text: "🎬 选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
+                                    MenuItem { text: "🔄 重新检测相机卡"; onTriggered: bridge.detectDji() }
+                                }
                             }
                         }
                     }
