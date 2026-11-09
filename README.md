@@ -5,7 +5,7 @@
 拍了一堆航拍或 Vlog 视频堆在卡里懒得剪？「随剪」的核心就是帮你 **一键筛掉所有垃圾无效片段，只留精彩瞬间**。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-green.svg)](#)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20Android%20%7C%20iOS-green.svg)](#)
 
 ---
 
@@ -32,19 +32,24 @@
 * 硬件加速流畅预览 DJI 4K 60fps 10-Bit (D-Log M / HLG) 大码率素材，不卡顿不掉帧；
 * 一键导出横屏母带或 9:16 竖屏短视频。
 
-### 4. 触控屏极简操作
-* 界面无冗余入口，配备显眼的触控大按钮；
-* 针对触摸屏/平板优化，支持双指轻点 (Two-finger Tap) 快速撤销，躺着划拉屏幕就能搞定。
+### 4. 移动端与触控响应式双模架构
+* **多端自适应**：界面基于 Qt Quick / QML 编写，同一套代码原生支持电脑端三栏专业工作台与移动端/平板触控流体布局；
+* **触控大热区**：配备底部拇指操作栏与大尺寸触控卡片，针对触摸屏与便携设备全面优化；
+* **手势快捷操作**：支持双指轻点 (Two-finger Tap) 快速撤销、双指捏合与滑动操作。
 
 ---
 
 ## 下载与运行
 
-### 免环境安装包
+### 电脑端免环境安装包
 GitHub Actions 云构建会自动随代码生成全平台独立运行包，可直接在 [Actions 构建产物](https://github.com/chinghoi/suijian/actions) 中下载：
 * macOS: `SuiJian-macOS.dmg`
 * Windows: `SuiJian-Windows.zip` (解压后直接双击运行 `随剪.exe`)
 * Linux: `SuiJian-Linux.tar.gz`
+
+### 移动端与平板 (Android / iOS)
+* 移动端流体布局与触控手势已完整实装，仓库内已包含完整的 Android 自适应图标与 iOS 资产；
+* Android 独立 `.apk` 安装包流水线正在通过 `pyside6-android-deploy` 接入 GitHub Actions 矩阵，完成后可直接在 Releases 中一键下载安装。
 
 ### 源码运行
 ```bash
@@ -63,10 +68,12 @@ python3 main.py
 - [ ] **独立外设适配模块**：自动检测 USB / SD 卡挂载，适配 DJI、GoPro、Sony、Canon 设备目录，自动过滤 `.LRF` / `.LRV` 等代理小文件。
 - [ ] **通用 3D LUT 调色**：支持导入标准 `.cube` 调色预设，FFmpeg 硬件加速直接渲染。
 - [ ] **免版权音乐与自动卡点**：内置专业 CC0 免费商用音乐库，基于音频重音节奏自动吸附剪辑点。
+- [ ] **Android APK 自动化构建流水线**：接入 `pyside6-android-deploy` 与 Android SDK，实现 GitHub Actions 自动构建 `.apk` 安装包。
 
 ### 中期规划
 - [ ] **多模态 AI 发圈文案**：成片后自动截取精彩关键帧，一键生成朋友圈与小红书文案。
 - [ ] **剪辑工程直导**：支持导出 Final Cut Pro (`.fcpxml`) 及剪映草稿工程。
+- [ ] **iOS / iPadOS 打包与 TestFlight**：导出 Xcode 工程并适配 iPadOS 触控与文件系统沙盒。
 
 ### 远期规划（探索性 · 远期中的远期）
 - [ ] **多模态故事线编排**：按剧情起承转合与叙事意图自动排布成片节奏。
