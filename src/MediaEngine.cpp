@@ -20,6 +20,7 @@
 #include <QCryptographicHash>
 #include <QTemporaryDir>
 #include <QElapsedTimer>
+#include <QUuid>
 
 MediaEngine::MediaEngine(QObject *parent) : QObject(parent) {
     m_heartbeatTimer = new QTimer(this);
@@ -727,7 +728,8 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
     QString out = down + QString("/随剪_成片_%1.mp4").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"));
 
     m_exportCancelled = false;
-    m_workers.emplace_back([this, clips, masterCanvas, targetColor, out]() {
+    const QString lutPath = m_lutPath;
+    m_workers.emplace_back([this, clips, masterCanvas, targetColor, out, lutPath]() {
         struct RunningGuard { std::atomic<bool> &flag; ~RunningGuard() { flag = false; } } guard{m_exportRunning};
         QTemporaryDir tempDir(QDir::tempPath() + "/suijian_export_XXXXXX");
         if (!tempDir.isValid()) {
@@ -841,6 +843,21 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             const QString framePix = targetColor == "10bit" ? "yuv420p10le" : "yuv420p";
             QString prefix = transpose == 1 || transpose == 2 ? QString("transpose=%1,").arg(transpose) : QString();
             prefix += colorFilter;
+            if (!lutPath.isEmpty() && targetColor == "8bit") {
+                QFile lutFile(lutPath);
+                const QString header = lutFile.open(QIODevice::ReadOnly) ? QString::fromUtf8(lutFile.read(4096)) : QString();
+                if (!header.contains("LUT_3D_SIZE")) {
+                    QMetaObject::invokeMethod(this, [this]() { emit exportFailed("LUT 文件不是可读取的 .cube 3D LUT"); });
+                    return;
+                }
+                QString escaped = QFileInfo(lutPath).absoluteFilePath();
+                escaped.replace("\\", "/");
+                escaped.replace(":", "\\:");
+                escaped.replace("'", "\\'");
+                prefix += QString("lut3d=file='%1',").arg(escaped);
+            } else if (!lutPath.isEmpty()) {
+                QMetaObject::invokeMethod(this, [this]() { emit statusMessage("LUT 只在 8-bit SDR 导出时套用，本次 HLG 母带未改色彩路径"); });
+            }
             QString filter = sameAspect
                 ? QString("[0:v:0]%1scale=%2:%3,format=%4,setsar=1[outv]").arg(prefix).arg(w).arg(h).arg(framePix)
                 : QString("[0:v:0]%1split=2[fgin][bgin];"
@@ -1164,4 +1181,239 @@ void MediaEngine::generateSrt(const QVariantList &clips, const QString &outputPa
     }
     file.close();
     emit statusMessage(QString("字幕已导出: %1").arg(out));
+}
+
+void MediaEngine::setExportLut(const QString &cubePath) {
+    QString path = cubePath;
+    if (path.startsWith("file://")) path = QUrl(path).toLocalFile();
+    m_lutPath = path;
+    emit statusMessage(path.isEmpty() ? "已清除 LUT" : QString("导出将套用 LUT: %1").arg(QFileInfo(path).fileName()));
+}
+
+static QList<double> beatTimesFrom(const QString &mediaPath) {
+    QProcess ffmpeg;
+    ffmpeg.start("ffmpeg", {"-v", "error", "-i", mediaPath, "-ac", "1", "-ar", "22050", "-f", "s16le", "pipe:1"});
+    if (!ffmpeg.waitForFinished(20000)) { ffmpeg.kill(); return {}; }
+    const QByteArray pcm = ffmpeg.readAllStandardOutput();
+    const auto *samples = reinterpret_cast<const qint16 *>(pcm.constData());
+    const int count = pcm.size() / int(sizeof(qint16));
+    const int rate = 22050;
+    const int window = rate / 40;
+    if (count < window * 4) return {};
+    QList<double> energy;
+    for (int i = 0; i + window <= count; i += window) {
+        double sum = 0;
+        for (int k = 0; k < window; ++k) sum += std::abs(samples[i + k]);
+        energy.append(sum / window);
+    }
+    double mean = 0;
+    for (double value : energy) mean += value;
+    mean /= energy.size();
+    QList<double> beats;
+    for (int i = 1; i + 1 < energy.size(); ++i) {
+        if (energy[i] > energy[i - 1] && energy[i] >= energy[i + 1] && energy[i] > mean * 1.6) {
+            const double time = i * double(window) / rate;
+            if (beats.isEmpty() || time - beats.last() >= 0.25) beats.append(time);
+        }
+    }
+    return beats;
+}
+
+static double nearestBeat(const QList<double> &beats, double time) {
+    double best = time;
+    double distance = 0.2;
+    for (double beat : beats) {
+        const double gap = std::abs(beat - time);
+        if (gap < distance) { distance = gap; best = beat; }
+    }
+    return best;
+}
+
+QString MediaEngine::builtinBeatTrack() {
+    const QString path = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/suijian_demo_beat.wav";
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    if (QFileInfo::exists(path) && QFileInfo(path).size() > 44) return path;
+    const int rate = 22050;
+    const int frames = rate * 4;
+    QByteArray pcm(frames * 2, 0);
+    auto *samples = reinterpret_cast<qint16 *>(pcm.data());
+    for (int beat = 0; beat < 8; ++beat) {
+        const int start = beat * rate / 2;
+        for (int i = 0; i < rate / 40 && start + i < frames; ++i) {
+            const double envelope = std::exp(-i / (rate / 200.0));
+            samples[start + i] = qint16(std::sin(6.28318530718 * 90 * i / rate) * envelope * 28000);
+        }
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return {};
+    QByteArray header(44, 0);
+    header.replace(0, 4, "RIFF");
+    const quint32 chunk = 36 + pcm.size();
+    header[4] = chunk & 255; header[5] = (chunk >> 8) & 255; header[6] = (chunk >> 16) & 255; header[7] = (chunk >> 24) & 255;
+    header.replace(8, 4, "WAVE");
+    header.replace(12, 4, "fmt ");
+    header[16] = 16;
+    header[20] = 1;
+    header[22] = 1;
+    header[24] = rate & 255; header[25] = (rate >> 8) & 255;
+    const quint32 byteRate = rate * 2;
+    header[28] = byteRate & 255; header[29] = (byteRate >> 8) & 255; header[30] = (byteRate >> 16) & 255; header[31] = (byteRate >> 24) & 255;
+    header[32] = 2; header[34] = 16;
+    header.replace(36, 4, "data");
+    const quint32 dataSize = pcm.size();
+    header[40] = dataSize & 255; header[41] = (dataSize >> 8) & 255; header[42] = (dataSize >> 16) & 255; header[43] = (dataSize >> 24) & 255;
+    file.write(header);
+    file.write(pcm);
+    return path;
+}
+
+QVariantList MediaEngine::snapToMusic(const QVariantList &clips, const QString &musicPath) {
+    QString path = musicPath;
+    if (path.startsWith("file://")) path = QUrl(path).toLocalFile();
+    if (path.isEmpty()) path = builtinBeatTrack();
+    const QList<double> beats = beatTimesFrom(path);
+    if (beats.isEmpty()) {
+        emit statusMessage("没有从音乐里找到重音，时间线未改");
+        return clips;
+    }
+    QVariantList snapped;
+    for (const auto &item : clips) {
+        QVariantMap clip = item.toMap();
+        const double start = clip.value("start").toDouble();
+        const double duration = clip.value("dur").toDouble();
+        const double moved = std::max(0.0, nearestBeat(beats, start));
+        clip["start"] = moved;
+        clip["end"] = moved + duration;
+        snapped.append(clip);
+    }
+    emit statusMessage(QString("已按 %1 个重音吸附入点").arg(beats.size()));
+    return snapped;
+}
+
+QVariantList MediaEngine::arrangeStoryline(const QVariantList &clips) {
+    if (clips.size() < 3) {
+        emit statusMessage("至少 3 个镜头才按起承转合重排");
+        return clips;
+    }
+    QList<QPair<double, int>> ranked;
+    for (int i = 0; i < clips.size(); ++i) ranked.append({clips[i].toMap().value("dur").toDouble(), i});
+    std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    const int opening = ranked.first().second;
+    const int ending = ranked[1].second;
+    const int climax = ranked.last().second;
+    QVariantList result;
+    result.append(clips[opening]);
+    for (int i = 0; i < clips.size(); ++i) {
+        if (i != opening && i != ending && i != climax) result.append(clips[i]);
+    }
+    result.append(clips[climax]);
+    result.append(clips[ending]);
+    emit statusMessage("已按起、承、转、合重排：短镜头开场，最长镜头作高潮，次短镜头收尾");
+    return result;
+}
+
+static QStringList queryTokens(const QString &query) {
+    QStringList parts;
+    QString current;
+    auto flush = [&] {
+        QString token = current.trimmed();
+        if (token.startsWith("只留")) token = token.mid(2);
+        if (token.startsWith("留下")) token = token.mid(2);
+        if (token.size() >= 2) parts.append(token);
+        current.clear();
+    };
+    for (const QChar &ch : query) {
+        if (ch.isSpace() || QString("，。,.、和与或").contains(ch)) flush();
+        else current.append(ch);
+    }
+    flush();
+    QStringList tokens;
+    for (const QString &part : parts) {
+        tokens.append(part);
+        for (int i = 0; i + 1 < part.size(); ++i) tokens.append(part.mid(i, 2));
+    }
+    tokens.removeDuplicates();
+    return tokens;
+}
+
+QVariantList MediaEngine::roughCutByWords(const QVariantList &clips, const QString &query) {
+    const QStringList tokens = queryTokens(query);
+    if (tokens.isEmpty()) {
+        emit statusMessage("请输入要保留的词，时间线未改");
+        return clips;
+    }
+    QVariantList kept;
+    for (const auto &item : clips) {
+        const QVariantMap clip = item.toMap();
+        const QString hay = clip.value("filename").toString() + " " + clip.value("src").toString() + " "
+            + clip.value("text").toString() + (clip.value("orient").toString() == "vertical" ? " 竖屏" : " 横屏");
+        for (const QString &token : tokens) {
+            if (hay.contains(token, Qt::CaseInsensitive)) { kept.append(clip); break; }
+        }
+    }
+    if (kept.isEmpty()) {
+        emit statusMessage("没有镜头的文件名、路径或已有字幕对上这些词，时间线未改");
+        return clips;
+    }
+    emit statusMessage(QString("按词语留下 %1 个镜头。只匹配文件名、路径和已有文字，不识别画面内容").arg(kept.size()));
+    return kept;
+}
+
+QString MediaEngine::socialCopy(const QVariantList &clips, const QString &platform) {
+    if (clips.isEmpty()) return "时间线上没有镜头";
+    double seconds = 0;
+    for (const auto &item : clips) seconds += item.toMap().value("dur").toDouble();
+    const QVariantMap first = clips.first().toMap();
+    const QString frame = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/suijian_social.jpg";
+    QDir().mkpath(QFileInfo(frame).absolutePath());
+    QProcess ffmpeg;
+    ffmpeg.start("ffmpeg", {"-y", "-ss", QString::number(first.value("start").toDouble()),
+        "-i", first.value("src").toString(), "-frames:v", "1", "-vf", "scale=720:-1", frame});
+    ffmpeg.waitForFinished(8000);
+    const QString shot = QString("%1 个镜头，约 %2 秒").arg(clips.size()).arg(int(std::lround(seconds)));
+    const QString still = QFileInfo::exists(frame) ? QString("关键帧: %1").arg(frame) : "关键帧未生成";
+    if (platform == "xhs") {
+        return QString("标题：%1 个瞬间\n正文：%2。按文件名整理，不是画面识别。\n%3\n#随剪 #航拍").arg(clips.size()).arg(shot).arg(still);
+    }
+    return QString("【随剪】%1。%2").arg(shot, still);
+}
+
+void MediaEngine::exportJianying(const QVariantList &clips, const QString &masterCanvas, const QString &outputDir) {
+    if (clips.isEmpty()) { emit statusMessage("时间线上没有镜头"); return; }
+    QString dirPath = outputDir;
+    if (dirPath.startsWith("file://")) dirPath = QUrl(dirPath).toLocalFile();
+    if (dirPath.isEmpty()) {
+        dirPath = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)
+            + QString("/随剪_剪映_%1").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    }
+    QDir().mkpath(dirPath);
+    const bool vertical = masterCanvas == "vertical";
+    const int width = vertical ? 1080 : 1920;
+    const int height = vertical ? 1920 : 1080;
+    QJsonArray videos, segments;
+    qint64 cursor = 0;
+    for (int i = 0; i < clips.size(); ++i) {
+        const QVariantMap clip = clips[i].toMap();
+        const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        const qint64 sourceStart = qint64(clip.value("start").toDouble() * 1000000);
+        const qint64 duration = qint64(std::max(0.1, clip.value("dur").toDouble()) * 1000000);
+        videos.append(QJsonObject{{"id", id}, {"path", clip.value("src").toString()}, {"material_name", clip.value("filename").toString()},
+            {"duration", duration}, {"width", width}, {"height", height}, {"type", "video"}});
+        segments.append(QJsonObject{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"material_id", id}, {"speed", 1.0}, {"volume", 1.0},
+            {"source_timerange", QJsonObject{{"start", sourceStart}, {"duration", duration}}},
+            {"target_timerange", QJsonObject{{"start", cursor}, {"duration", duration}}}});
+        cursor += duration;
+    }
+    QJsonObject content{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"fps", 30}, {"duration", cursor},
+        {"canvas_config", QJsonObject{{"width", width}, {"height", height}, {"ratio", vertical ? "9:16" : "16:9"}}},
+        {"materials", QJsonObject{{"videos", videos}, {"audios", QJsonArray()}, {"texts", QJsonArray()}}},
+        {"tracks", QJsonArray{QJsonObject{{"id", "video"}, {"type", "video"}, {"segments", segments}}}}};
+    QFile draft(dirPath + "/draft_content.json");
+    if (!draft.open(QIODevice::WriteOnly)) { emit statusMessage("无法写入剪映草稿"); return; }
+    draft.write(QJsonDocument(content).toJson(QJsonDocument::Indented));
+    QFile meta(dirPath + "/draft_meta_info.json");
+    if (meta.open(QIODevice::WriteOnly)) {
+        meta.write(QJsonDocument(QJsonObject{{"draft_name", "随剪"}, {"draft_id", content.value("id").toString()}, {"tm_duration", cursor}}).toJson());
+    }
+    emit statusMessage(QString("剪映草稿已写出: %1（未在剪映里打开验证）").arg(dirPath));
 }

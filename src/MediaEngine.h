@@ -37,6 +37,13 @@ public slots:
     void generateSrt(const QVariantList &clips, const QString &outputPath);
     void exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath);
     void exportFcpxml(const QVariantList &clips, const QString &masterCanvas, const QString &outputPath);
+    void setExportLut(const QString &cubePath);
+    void exportJianying(const QVariantList &clips, const QString &masterCanvas, const QString &outputDir);
+    QString builtinBeatTrack();
+    QVariantList snapToMusic(const QVariantList &clips, const QString &musicPath);
+    QVariantList arrangeStoryline(const QVariantList &clips);
+    QVariantList roughCutByWords(const QVariantList &clips, const QString &query);
+    QString socialCopy(const QVariantList &clips, const QString &platform);
 
 signals:
     void mediaLoaded(const QStringList &dates, const QVariantList &mediaList, const QString &sourceLabel);
@@ -83,4 +90,5 @@ private:
     std::atomic<bool> m_aiCancelled{false};
     QVariantList m_currentAiTasks;
     QProcess *m_exportProcess = nullptr;
+    QString m_lutPath;
 };

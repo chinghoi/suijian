@@ -3728,7 +3728,7 @@ ApplicationWindow {
     Dialog {
         id: exportModal
         anchors.centerIn: parent
-        width: Math.min(560, root.width - 24); height: Math.min(500, root.height - 24)
+        width: Math.min(560, root.width - 24); height: Math.min(680, root.height - 24)
         modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
 
@@ -3911,6 +3911,93 @@ ApplicationWindow {
                 }
             }
 
+            TextField {
+                id: roughCutQuery
+                Layout.fillWidth: true
+                enabled: !exportModal.isRunning && root.timelineClips.length > 0
+                placeholderText: "按文件名或已有字幕留下，例如 猫咪 海边"
+                color: "#e2e8f0"
+                font.pixelSize: 12
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 6
+                enabled: !exportModal.isRunning && root.timelineClips.length > 0
+                opacity: enabled ? 1.0 : 0.45
+                Button {
+                    text: "LUT"
+                    Layout.fillWidth: true
+                    onClicked: lutDialog.open()
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button {
+                    text: "卡点"
+                    Layout.fillWidth: true
+                    onClicked: musicDialog.open()
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button {
+                    text: "内置节奏"
+                    Layout.fillWidth: true
+                    onClicked: {
+                        root.pushUndoState("按内置节奏吸附")
+                        root.timelineClips = bridge.snapToMusic(root.timelineClips, bridge.builtinBeatTrack())
+                    }
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button {
+                    text: "故事线"
+                    Layout.fillWidth: true
+                    onClicked: {
+                        root.pushUndoState("按起承转合重排")
+                        root.timelineClips = bridge.arrangeStoryline(root.timelineClips)
+                    }
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 6
+                enabled: !exportModal.isRunning && root.timelineClips.length > 0
+                opacity: enabled ? 1.0 : 0.45
+                Button {
+                    text: "按词留下"
+                    Layout.fillWidth: true
+                    onClicked: {
+                        root.pushUndoState("按词语粗剪")
+                        root.timelineClips = bridge.roughCutByWords(root.timelineClips, roughCutQuery.text)
+                    }
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button {
+                    text: "朋友圈文案"
+                    Layout.fillWidth: true
+                    onClicked: statusBanner.show(bridge.socialCopy(root.timelineClips, "wechat"))
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button {
+                    text: "小红书文案"
+                    Layout.fillWidth: true
+                    onClicked: statusBanner.show(bridge.socialCopy(root.timelineClips, "xhs"))
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button {
+                    text: "剪映草稿"
+                    Layout.fillWidth: true
+                    onClicked: {
+                        var expCanvas = exportCanvasCombo.currentIndex === 0 ? root.getAutoMasterCanvas() : (exportCanvasCombo.currentIndex === 1 ? "horizontal" : "vertical")
+                        bridge.exportJianying(root.timelineClips, expCanvas, "")
+                    }
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+
             Rectangle { Layout.fillWidth: true; height: 1; color: "#242938" }
 
             // 实时导出状态看板
@@ -4062,6 +4149,24 @@ ApplicationWindow {
             var path = folderDialog.selectedFolder.toString()
             if (path.indexOf("file://") === 0) path = decodeURIComponent(path.substring(7))
             bridge.scanDirectory(path)
+        }
+    }
+
+    FileDialog {
+        id: lutDialog
+        title: "选择 .cube 3D LUT"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["3D LUT (*.cube)", "所有文件 (*)"]
+        onAccepted: bridge.setExportLut(selectedFile.toString())
+    }
+    FileDialog {
+        id: musicDialog
+        title: "选择用于卡点的音乐"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["音频 (*.wav *.mp3 *.m4a *.aac)", "所有文件 (*)"]
+        onAccepted: {
+            root.pushUndoState("按音乐重音吸附")
+            root.timelineClips = bridge.snapToMusic(root.timelineClips, selectedFile.toString())
         }
     }
 

@@ -84,11 +84,7 @@ cmake --build build -j
 ./build/随剪                           # Linux
 ```
 
-#### Python 解释运行
-```bash
-pip install -r requirements.txt
-python3 main.py
-```
+工程只保留 C++ 实现，不再提供 Python 启动方式。
 
 ---
 
@@ -105,18 +101,18 @@ python3 main.py
 - [x] **Apple HIG 标准 macOS 坞标**：标准 824x824 呼吸边距圆角矩形与双层原生阴影。
 
 ### 近期规划
-- [ ] **通用 3D LUT 调色**：支持导入标准 `.cube` 调色预设，FFmpeg 硬件加速直接渲染。
-- [ ] **免版权音乐与自动卡点**：内置专业 CC0 免费商用音乐库，基于音频重音节奏自动吸附剪辑点。
-- [ ] **Android APK 自动化构建流水线**：接入 `pyside6-android-deploy` 与 Android SDK，实现 GitHub Actions 自动构建 `.apk` 安装包。
+- [x] **3D LUT**：导出面板可选择标准 `.cube`，仅在 8-bit SDR 成片上通过 FFmpeg `lut3d` 套用。未选择时不影响原来的 HLG 母带路径。
+- [x] **音乐重音卡点**：可导入自己的音乐，或使用程序生成的一段示范鼓点，把镜头入点吸到附近重音。没有内置曲库。
+- [ ] **Android APK**：`scripts/build_android.sh` 与手动工作流 `.github/workflows/android.yml` 面向 Qt Android 套件。仓库已没有 PySide，不能再用 `pyside6-android-deploy`。本环境没有 Android SDK，没有打出 APK。
 
 ### 中期规划
-- [ ] **多模态 AI 发圈文案**：成片后自动截取精彩关键帧，一键生成朋友圈与小红书文案。
-- [ ] **剪映草稿工程直导**：支持直接导出剪映草稿项目目录（`draft_content.json`）。
-- [ ] **iOS / iPadOS 打包与 TestFlight**：导出 Xcode 工程并适配 iPadOS 触控与文件系统沙盒。
+- [x] **朋友圈 / 小红书文案**：按镜头数量和时长生成文案，并截一张时间线中点附近的关键帧。不识别画面里是什么。
+- [x] **剪映草稿**：导出目录里的 `draft_content.json` 与 `draft_meta_info.json`，时间单位是微秒。还没有在剪映客户端里打开验证。
+- [ ] **iOS / TestFlight**：`scripts/generate_xcode.sh` 只能在已安装 Qt iOS 套件的 macOS 上生成 Xcode 工程。没有归档，也没有提交 TestFlight。
 
 ### 远期规划
-- [ ] **多模态故事线编排**：按剧情起承转合与叙事意图自动排布成片节奏。
-- [ ] **自然语言随心粗剪**：支持自然语言描述（如“只留猫咪特写和夕阳海边”）定向粗剪。
+- [x] **起承转合重排**：至少 3 个镜头时，最短的放开头，最长的放在高潮，次短的放结尾，其余保持原来的先后。这是时长规则，不是剧情理解。
+- [x] **按词语留下镜头**：匹配文件名、路径和已有字幕里的词，例如文件名含「猫咪」就能被「只留猫咪特写和夕阳海边」留住。不看画面内容。
 
 ---
 
