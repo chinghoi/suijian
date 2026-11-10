@@ -39,7 +39,7 @@ if (BUILD_TESTING)
     qt_add_executable(screening_integration_test
         tests/ScreeningIntegrationTest.cpp src/MediaEngine.cpp src/MediaEngine.h src/ColorPipeline.cpp)
     target_include_directories(screening_integration_test PRIVATE src)
-    target_link_libraries(screening_integration_test PRIVATE Qt6::Core)
+    target_link_libraries(screening_integration_test PRIVATE Qt6::Core Qt6::Gui)
     set_target_properties(screening_integration_test PROPERTIES MACOSX_BUNDLE FALSE)
     add_test(NAME screening_integration COMMAND screening_integration_test)
     set_tests_properties(screening_integration PROPERTIES TIMEOUT 180)

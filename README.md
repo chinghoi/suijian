@@ -62,11 +62,11 @@
 
 GitHub Actions 会打出这些包，也可在 [Releases](https://github.com/chinghoi/suijian/releases) 下载：
 
-* macOS: `SuiJian-Native-macOS.dmg`
-* Windows: `SuiJian-Native-Windows.zip`（解压后运行 `随剪.exe`）
-* Linux: `SuiJian-Native-Linux-x64.tar.gz`
+* macOS: `SuiJian-Native-macOS.dmg`（包里带有 Qt，分析和导出仍要本机 `ffmpeg` / `ffprobe`）
+* Windows: `SuiJian-Native-Windows.zip`（解压后运行 `随剪.exe`，包里带有 Qt，同样需要本机 FFmpeg）
+* Linux: `SuiJian-Native-Linux-x64.tar.gz` 里只有可执行文件。系统里要有兼容的 Qt 6、Qt Quick 和 `ffmpeg` / `ffprobe`，否则打不开或不能处理视频。
 
-本地编译需要 Qt 6（Core、Gui、Quick、QuickControls2、Multimedia）、CMake 3.20+、C++17，以及运行时能调用的 `ffmpeg` 和 `ffprobe`。
+本地编译需要 Qt 6（Core、Gui、Quick、QuickControls2、Multimedia）、CMake 3.20+、C++17，以及运行时能调用的 `ffmpeg` 和 `ffprobe`。HDR 转 SDR 还需要带 `zscale` 和 `tonemap` 的 FFmpeg；没有这两个滤镜时导出会停下来说明原因。
 
 ```bash
 cmake -B build
@@ -91,12 +91,12 @@ cmake --build build -j
 
 ### 近期规划
 - [x] **3D LUT**：导出面板可选择标准 `.cube`，仅在 8-bit SDR 成片上通过 FFmpeg `lut3d` 套用。未选择时不影响原来的 HLG 母带路径。
-- [x] **音乐重音卡点**：可导入自己的音乐，或使用程序生成的一段示范鼓点，把镜头入点吸到附近重音。没有内置曲库。
+- [x] **音乐重音卡点**：可导入自己的音乐，或使用程序生成的一段示范鼓点。剪切点按成片时间落到重音上，不会把素材入点改到音乐的时间码。导出时成片音轨换成这首音乐，镜头原声不进入成片。没有内置曲库。
 - [ ] **Android APK**：`scripts/build_android.sh` 需要本机的 Android SDK 和 Qt Android 套件。这里没有打出 APK。
 
 ### 中期规划
-- [x] **朋友圈 / 小红书文案**：按镜头数量和时长生成文案，并截一张时间线中点附近的关键帧。不识别画面里是什么。
-- [x] **剪映草稿**：导出目录里的 `draft_content.json` 与 `draft_meta_info.json`，时间单位是微秒。还没有在剪映客户端里打开验证。
+- [x] **朋友圈 / 小红书文案**：按镜头数量和时长生成文案，弹窗里可以复制，并截一张时间线第一段入点附近的关键帧。不识别画面里是什么。
+- [x] **剪映草稿**：导出目录里的 `draft_content.json` 与 `draft_meta_info.json`，时间单位是微秒，素材宽高用探测到的画面。还没有在剪映客户端里打开验证，需要自行拷进剪映草稿目录。
 - [ ] **iOS / TestFlight**：`scripts/generate_xcode.sh` 只能在已安装 Qt iOS 套件的 macOS 上生成 Xcode 工程。没有归档，也没有提交 TestFlight。
 
 ### 远期规划
