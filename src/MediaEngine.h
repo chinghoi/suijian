@@ -37,14 +37,18 @@ public slots:
     void exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath);
     void exportFcpxml(const QVariantList &clips, const QString &masterCanvas, const QString &outputPath);
     void setExportLut(const QString &cubePath);
+    void setBeatMusic(const QString &path);
+    void copyText(const QString &text);
     void exportJianying(const QVariantList &clips, const QString &masterCanvas, const QString &outputDir);
     QString builtinBeatTrack();
     QVariantList snapToMusic(const QVariantList &clips, const QString &musicPath);
     QVariantList arrangeStoryline(const QVariantList &clips);
     QVariantList roughCutByWords(const QVariantList &clips, const QString &query);
     QString socialCopy(const QVariantList &clips, const QString &platform);
+    QString beatMusic() const;
 
 signals:
+    void beatMusicChanged();
     void mediaLoaded(const QStringList &dates, const QVariantList &mediaList, const QString &sourceLabel);
     void importProgress(int current, int total, const QString &filename);
     void djiFound(const QString &path);
@@ -82,6 +86,7 @@ private:
 
     std::atomic<bool> m_aiPaused{false};
     std::atomic<bool> m_aiQuiesced{false};
+    std::atomic<bool> m_aiCheckpointOk{false};
     std::atomic<bool> m_aiRunning{false};
     std::atomic<bool> m_exportRunning{false};
     std::atomic<bool> m_exportCancelled{false};
@@ -90,4 +95,5 @@ private:
     QVariantList m_currentAiTasks;
     QProcess *m_exportProcess = nullptr;
     QString m_lutPath;
+    QString m_beatMusic;
 };

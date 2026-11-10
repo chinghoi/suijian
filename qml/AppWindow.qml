@@ -96,12 +96,14 @@ ApplicationWindow {
     property var speechAnnotations: ({})  // { videoPath: [annotated segments] }
     property string currentSubtitleText: ""  // 当前播放位置的字幕文本
     property var pendingUsbDevice: null
+    property string beatMusic: ""
 
     function pushUndoState(actionName) {
         var snapshot = {
             action: actionName || "剪辑变动",
             clips: JSON.parse(JSON.stringify(root.timelineClips)),
-            activeClipIndex: root.activeClipIndex
+            activeClipIndex: root.activeClipIndex,
+            beatMusic: root.beatMusic
         }
         var newStack = undoStack.slice(Math.max(0, undoStack.length - 49))
         newStack.push(snapshot)
@@ -117,7 +119,8 @@ ApplicationWindow {
         var currentSnapshot = {
             action: "当前状态",
             clips: JSON.parse(JSON.stringify(root.timelineClips)),
-            activeClipIndex: root.activeClipIndex
+            activeClipIndex: root.activeClipIndex,
+            beatMusic: root.beatMusic
         }
         var newRedo = redoStack.slice()
         newRedo.push(currentSnapshot)
@@ -128,6 +131,8 @@ ApplicationWindow {
         undoStack = newUndo
 
         root.timelineClips = prevSnapshot.clips
+        root.beatMusic = prevSnapshot.beatMusic || ""
+        bridge.setBeatMusic(root.beatMusic)
         root.activeClipIndex = Math.min(prevSnapshot.activeClipIndex, root.timelineClips.length - 1)
         if (root.activeClipIndex >= 0) {
             root.loadActiveClip(root.activeClipIndex, false)
@@ -147,13 +152,16 @@ ApplicationWindow {
         var currentSnapshot = {
             action: "撤销前状态",
             clips: JSON.parse(JSON.stringify(root.timelineClips)),
-            activeClipIndex: root.activeClipIndex
+            activeClipIndex: root.activeClipIndex,
+            beatMusic: root.beatMusic
         }
         var newUndo = undoStack.slice()
         newUndo.push(currentSnapshot)
         undoStack = newUndo
 
         root.timelineClips = nextSnapshot.clips
+        root.beatMusic = nextSnapshot.beatMusic || ""
+        bridge.setBeatMusic(root.beatMusic)
         root.activeClipIndex = Math.min(nextSnapshot.activeClipIndex, root.timelineClips.length - 1)
         if (root.activeClipIndex >= 0) {
             root.loadActiveClip(root.activeClipIndex, false)
@@ -363,6 +371,9 @@ ApplicationWindow {
                 "transpose": m.transpose,
                 "media_dur": m.duration,
                 "has_audio": m.has_audio,
+                "width": m.width,
+                "height": m.height,
+                "fps": m.fps,
                 "text": "",
                 "subtitles": []
             })
@@ -428,12 +439,30 @@ ApplicationWindow {
             "transpose": m.transpose,
             "media_dur": m.duration,
             "has_audio": m.has_audio,
+            "width": m.width,
+            "height": m.height,
+            "fps": m.fps,
             "text": "",
             "subtitles": []
         })
         root.timelineClips = newClips
         root.loadActiveClip(newClips.length - 1, false)
         statusBanner.show("已将 [" + m.filename + "] 加入时间线")
+    }
+
+    function snapTimeline(path) {
+        var before = JSON.stringify(root.timelineClips)
+        var musicBefore = root.beatMusic
+        var next = bridge.snapToMusic(root.timelineClips, path)
+        if (JSON.stringify(next) === before && bridge.beatMusic === musicBefore) return
+        root.pushUndoState("按音乐重音调整剪切点")
+        root.timelineClips = next
+        root.beatMusic = bridge.beatMusic
+    }
+
+    function openSocialCopy(platform) {
+        socialBody.text = bridge.socialCopy(root.timelineClips, platform)
+        socialDialog.open()
     }
 
     function stepActiveIn(delta) {
@@ -1261,6 +1290,12 @@ ApplicationWindow {
                             onClicked: root.deleteCurrentClip()
                             background: Rectangle { color: "#7f1d1d"; radius: 6 }
                             contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        }
+                        Button {
+                            text: "粗剪"; Layout.fillWidth: true; Layout.preferredHeight: 36
+                            onClicked: timelineTools.open()
+                            background: Rectangle { color: "#1e293b"; radius: 6 }
+                            contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         }
                         Button {
                             text: "◀ 前移"; Layout.fillWidth: true; Layout.preferredHeight: 36
@@ -2953,6 +2988,7 @@ ApplicationWindow {
                     Button { text: "删除 (Del)"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: root.deleteCurrentClip(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "◀ 前移"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: root.moveCurrentClip(-1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Button { text: "后移 ▶"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: root.moveCurrentClip(1); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "粗剪"; enabled: root.timelineClips.length > 0; opacity: root.timelineClips.length > 0 ? 1.0 : 0.4; onClicked: timelineTools.open(); background: Rectangle { color: "#1e2230"; radius: 4 } contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                     Item { Layout.fillWidth: true }
                     Text { text: "提示：双击/拖拽素材导入时间线 · 支持双指触控撤销"; color: "#64748b"; font.pixelSize: 11 }
                 }
@@ -3747,7 +3783,7 @@ ApplicationWindow {
     Dialog {
         id: exportModal
         anchors.centerIn: parent
-        width: Math.min(560, root.width - 24); height: Math.min(680, root.height - 24)
+        width: Math.min(560, root.width - 24); height: Math.min(520, root.height - 24)
         modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
 
@@ -3931,78 +3967,14 @@ ApplicationWindow {
                 }
             }
 
-            TextField {
-                id: roughCutQuery
-                Layout.fillWidth: true
-                enabled: !exportModal.isRunning && root.timelineClips.length > 0
-                placeholderText: "按文件名或已有字幕留下，例如 猫咪 海边"
-                color: "#e2e8f0"
-                font.pixelSize: 12
-            }
             RowLayout {
                 Layout.fillWidth: true; spacing: 6
-                enabled: !exportModal.isRunning && root.timelineClips.length > 0
+                enabled: !exportModal.isRunning
                 opacity: enabled ? 1.0 : 0.45
                 Button {
                     text: "LUT"
                     Layout.fillWidth: true
                     onClicked: lutDialog.open()
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-                Button {
-                    text: "卡点"
-                    Layout.fillWidth: true
-                    onClicked: musicDialog.open()
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-                Button {
-                    text: "内置节奏"
-                    Layout.fillWidth: true
-                    onClicked: {
-                        root.pushUndoState("按内置节奏吸附")
-                        root.timelineClips = bridge.snapToMusic(root.timelineClips, bridge.builtinBeatTrack())
-                    }
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-                Button {
-                    text: "故事线"
-                    Layout.fillWidth: true
-                    onClicked: {
-                        root.pushUndoState("按起承转合重排")
-                        root.timelineClips = bridge.arrangeStoryline(root.timelineClips)
-                    }
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-            }
-            RowLayout {
-                Layout.fillWidth: true; spacing: 6
-                enabled: !exportModal.isRunning && root.timelineClips.length > 0
-                opacity: enabled ? 1.0 : 0.45
-                Button {
-                    text: "按词留下"
-                    Layout.fillWidth: true
-                    onClicked: {
-                        root.pushUndoState("按词语粗剪")
-                        root.timelineClips = bridge.roughCutByWords(root.timelineClips, roughCutQuery.text)
-                    }
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-                Button {
-                    text: "朋友圈文案"
-                    Layout.fillWidth: true
-                    onClicked: statusBanner.show(bridge.socialCopy(root.timelineClips, "wechat"))
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-                Button {
-                    text: "小红书文案"
-                    Layout.fillWidth: true
-                    onClicked: statusBanner.show(bridge.socialCopy(root.timelineClips, "xhs"))
                     background: Rectangle { color: "#1e293b"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
@@ -4186,9 +4158,94 @@ ApplicationWindow {
         title: "选择用于卡点的音乐"
         fileMode: FileDialog.OpenFile
         nameFilters: ["音频 (*.wav *.mp3 *.m4a *.aac)", "所有文件 (*)"]
-        onAccepted: {
-            root.pushUndoState("按音乐重音吸附")
-            root.timelineClips = bridge.snapToMusic(root.timelineClips, selectedFile.toString())
+        onAccepted: root.snapTimeline(selectedFile.toString())
+    }
+
+    Dialog {
+        id: timelineTools
+        anchors.centerIn: parent
+        width: Math.min(480, root.width - 24)
+        height: Math.min(360, root.height - 24)
+        modal: true
+        background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
+        header: Rectangle {
+            color: "transparent"; height: 36
+            Text { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "时间线粗剪"; color: "#f1f5f9"; font.bold: true; font.pixelSize: 13 }
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 8
+            TextField {
+                id: roughCutQuery
+                Layout.fillWidth: true
+                placeholderText: "按文件名或已有字幕留下，例如 猫咪 海边"
+                color: "#e2e8f0"
+                font.pixelSize: 12
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 6
+                Button { text: "卡点"; Layout.fillWidth: true; onClicked: musicDialog.open(); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                Button { text: "内置节奏"; Layout.fillWidth: true; onClicked: root.snapTimeline(bridge.builtinBeatTrack()); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                Button {
+                    text: "故事线"; Layout.fillWidth: true
+                    onClicked: { root.pushUndoState("按起承转合重排"); root.timelineClips = bridge.arrangeStoryline(root.timelineClips) }
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 6
+                Button {
+                    text: "按词留下"; Layout.fillWidth: true
+                    onClicked: { root.pushUndoState("按词语粗剪"); root.timelineClips = bridge.roughCutByWords(root.timelineClips, roughCutQuery.text) }
+                    background: Rectangle { color: "#1e293b"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Button { text: "朋友圈文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("wechat"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                Button { text: "小红书文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("xhs"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#94a3b8"
+                font.pixelSize: 11
+                text: root.beatMusic ? ("当前卡点音乐: " + root.beatMusic) : "还没有卡点音乐。卡点改的是成片剪切点，导出时用这首音乐替换镜头原声。"
+            }
+        }
+    }
+
+    Dialog {
+        id: socialDialog
+        anchors.centerIn: parent
+        width: Math.min(480, root.width - 24)
+        height: Math.min(320, root.height - 24)
+        modal: true
+        background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
+        header: Rectangle {
+            color: "transparent"; height: 36
+            Text { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "社媒文案"; color: "#f1f5f9"; font.bold: true; font.pixelSize: 13 }
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 8
+            TextArea {
+                id: socialBody
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                wrapMode: TextEdit.Wrap
+                readOnly: true
+                color: "#e2e8f0"
+                font.pixelSize: 13
+            }
+            Button {
+                text: "复制文案"
+                Layout.alignment: Qt.AlignRight
+                onClicked: { bridge.copyText(socialBody.text); statusBanner.show("文案已复制") }
+                background: Rectangle { color: "#2563eb"; radius: 4 }
+                contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+            }
         }
     }
 
