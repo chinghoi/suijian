@@ -5,7 +5,6 @@
 #include <QIcon>
 #include <QPalette>
 #include <QColor>
-#include <QFile>
 #include "MediaEngine.h"
 
 int main(int argc, char *argv[]) {
@@ -40,12 +39,7 @@ int main(int argc, char *argv[]) {
     MediaEngine bridge;
     engine.rootContext()->setContextProperty("bridge", &bridge);
 
-    const QUrl url(QStringLiteral("qrc:/DJI/Editor/qml/AppWindow.qml"));
-    if (QFile::exists("qml/AppWindow.qml")) {
-        engine.load(QUrl::fromLocalFile("qml/AppWindow.qml"));
-    } else {
-        engine.load(url);
-    }
+    engine.load(QUrl(QStringLiteral("qrc:/DJI/Editor/qml/AppWindow.qml")));
 
     if (engine.rootObjects().isEmpty()) {
         return -1;

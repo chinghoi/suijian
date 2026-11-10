@@ -33,6 +33,8 @@ ApplicationWindow {
     property string selectedDurationStr: "00:00"
     property real selectedTotalSeconds: 0.0
     property string mediaViewMode: "grid" // "grid" | "list"
+    property bool followAi: false
+    property bool followExport: false
     property bool isImporting: false
     property int importCurrent: 0
     property int importTotal: 0
@@ -359,6 +361,8 @@ ApplicationWindow {
                 "is_10bit": m.is_10bit,
                 "thumb": m.thumb,
                 "transpose": m.transpose,
+                "media_dur": m.duration,
+                "has_audio": m.has_audio,
                 "text": "",
                 "subtitles": []
             })
@@ -422,6 +426,8 @@ ApplicationWindow {
             "is_10bit": m.is_10bit,
             "thumb": m.thumb,
             "transpose": m.transpose,
+            "media_dur": m.duration,
+            "has_audio": m.has_audio,
             "text": "",
             "subtitles": []
         })
@@ -448,9 +454,11 @@ ApplicationWindow {
 
     function stepActiveOut(delta) {
         if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
-        pushUndoState("调整镜头出点")
         var clip = Object.assign({}, timelineClips[activeClipIndex])
         var newEnd = Math.max(clip.start + 0.5, clip.end + delta)
+        if (clip.media_dur > 0) newEnd = Math.min(clip.media_dur, newEnd)
+        if (newEnd <= clip.start + 0.5 || Math.abs(newEnd - clip.end) < 0.001) return
+        pushUndoState("调整镜头出点")
         clip.end = Number(newEnd.toFixed(2))
         clip.dur = Number((clip.end - clip.start).toFixed(2))
         clip.dur_str = clip.dur + "s"
@@ -658,12 +666,15 @@ ApplicationWindow {
         }
 
         function onAiProgress(percent, stepText) {
+            if (!root.followAi) return
             aiModal.isRunning = true
             aiModal.progress = percent
-            aiModal.statusText = stepText
+            if (!aiModal.isPausing) aiModal.statusText = stepText
         }
 
         function onAiFailed(message) {
+            if (!root.followAi) return
+            root.followAi = false
             aiModal.isRunning = false
             aiModal.isPaused = false
             aiModal.isPausing = false
@@ -673,28 +684,25 @@ ApplicationWindow {
         }
 
         function onAiFinished(tasks) {
-
+            if (!root.followAi) return
+            root.followAi = false
             aiModal.isRunning = false
             aiModal.progress = 0
             aiModal.isPaused = false
             aiModal.isPausing = false
             aiModal.close()
+            if (tasks.length === 0) {
+                statusBanner.show("未筛选到片段，时间线保持原样")
+                return
+            }
             root.pushUndoState("应用 AI 智能初筛结果")
             root.timelineClips = tasks
-            if (tasks.length > 0) {
-                root.loadActiveClip(0, false)
-                statusBanner.show("AI 自动筛选完成，共剪辑出 " + tasks.length + " 段精彩镜头！")
-            } else {
-                player.stop()
-                player.source = ""
-                root.activeClipIndex = -1
-                root.monitorMode = "idle"
-                root.previewItem = null
-                statusBanner.show("未筛选到片段，请检查筛选参数")
-            }
+            root.loadActiveClip(0, false)
+            statusBanner.show("AI 自动筛选完成，共剪辑出 " + tasks.length + " 段精彩镜头！")
         }
 
         function onAiPaused(completed, total, reason) {
+            if (!root.followAi) return
             aiModal.isRunning = true
             aiModal.isPausing = false
             aiModal.isPaused = true
@@ -703,6 +711,7 @@ ApplicationWindow {
         }
 
         function onAiResumed() {
+            if (!root.followAi) return
             aiModal.isRunning = true
             aiModal.isPaused = false
             aiModal.isPausing = false
@@ -712,7 +721,7 @@ ApplicationWindow {
         function onDeviceDisconnected(devName) {
             root.isDeviceDisconnected = true
             root.disconnectedDeviceName = devName
-            statusBanner.show("存储设备 [" + devName + "] 已断开（拔出录像中）· 任务已安全挂起")
+            statusBanner.show("存储设备 [" + devName + "] 已断开。正在停止读取，界面显示已暂停后才能拔卡")
             if (player.playbackState === MediaPlayer.PlayingState) player.pause()
         }
 
@@ -734,12 +743,15 @@ ApplicationWindow {
         }
 
         function onExportProgress(percent, stepText) {
+            if (!root.followExport) return
             exportModal.isRunning = true
             exportModal.progress = percent
             exportModal.statusText = stepText
         }
 
         function onExportFinished(outPath) {
+            if (!root.followExport) return
+            root.followExport = false
             exportModal.isRunning = false
             exportModal.progress = 0
             exportModal.close()
@@ -747,6 +759,8 @@ ApplicationWindow {
         }
 
         function onExportFailed(err) {
+            if (!root.followExport) return
+            root.followExport = false
             exportModal.isRunning = false
             exportModal.progress = 0
             exportModal.close()
@@ -1735,6 +1749,7 @@ ApplicationWindow {
                                     Button {
                                         text: "中止初筛"
                                         onClicked: {
+                                            root.followAi = false
                                             bridge.cancelCurrentJob()
                                             aiModal.isRunning = false
                                             aiModal.progress = 0
@@ -1852,6 +1867,7 @@ ApplicationWindow {
                                 else canvasMode = "vertical"
                                 root.masterCanvas = canvasMode
 
+                                root.followAi = true
                                 aiModal.isRunning = true
                                 aiModal.progress = 1
                                 aiModal.isPaused = false
@@ -3101,6 +3117,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (aiModal.isRunning) {
+                                root.followAi = false
                                 bridge.cancelCurrentJob()
                                 aiModal.isRunning = false
                                 aiModal.progress = 0
@@ -3436,6 +3453,7 @@ ApplicationWindow {
                 Button {
                     text: aiModal.isRunning ? "中止初筛" : "取消"
                     onClicked: {
+                        root.followAi = false
                         bridge.cancelCurrentJob()
                         aiModal.isRunning = false
                         aiModal.progress = 0
@@ -3549,6 +3567,7 @@ ApplicationWindow {
                         }
                         root.masterCanvas = canvasMode
 
+                        root.followAi = true
                         aiModal.isRunning = true
                         aiModal.progress = 1.0
                         aiModal.isPaused = false
@@ -3770,6 +3789,7 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (exportModal.isRunning) {
+                                root.followExport = false
                                 bridge.cancelCurrentJob()
                                 exportModal.isRunning = false
                                 exportModal.progress = 0
@@ -4086,6 +4106,7 @@ ApplicationWindow {
                 Button {
                     text: exportModal.isRunning ? "中止导出" : "取消"
                     onClicked: {
+                        root.followExport = false
                         bridge.cancelCurrentJob()
                         exportModal.isRunning = false
                         exportModal.progress = 0
@@ -4119,6 +4140,7 @@ ApplicationWindow {
                             expCanvas = "vertical"
                         }
                         root.masterCanvas = expCanvas
+                        root.followExport = true
                         exportModal.isRunning = true
                         exportModal.progress = 1
                         exportModal.statusText = "正在启动硬件加速导出管道..."
