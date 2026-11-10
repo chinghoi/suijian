@@ -49,7 +49,7 @@ ApplicationWindow {
 
     property string masterCanvas: "horizontal"
     property string canvasChoice: "auto"
-    property string targetColor: "10bit"
+    property string targetColor: "8bit"
 
     function getAutoMasterCanvas() {
         var items = []
@@ -300,10 +300,10 @@ ApplicationWindow {
         var cur = Object.assign({}, newClips[activeClipIndex])
         if (cur.orient === "vertical") {
             cur.orient = "horizontal"
-            cur.transpose = null
+            cur.transpose = cur.transpose ? null : 1
         } else {
             cur.orient = "vertical"
-            cur.transpose = 1
+            cur.transpose = cur.transpose ? null : 1
         }
         newClips[activeClipIndex] = cur
         root.timelineClips = newClips
@@ -686,8 +686,8 @@ ApplicationWindow {
         function onAiPaused(completed, total, reason) {
             aiModal.isRunning = true
             aiModal.isPaused = true
-            aiModal.statusText = "任务已安全暂停 (" + reason + ") · 进度已留存 (" + completed + "/" + total + ")"
-            statusBanner.show("初筛任务已安全暂存检查点，插回相机即可继续")
+            aiModal.statusText = "任务已暂停 (" + reason + ") · 进度 " + completed + "/" + total
+            statusBanner.show("初筛任务已暂停：" + reason)
         }
 
         function onAiResumed() {
@@ -1745,10 +1745,10 @@ ApplicationWindow {
                             enabled: !aiModal.isRunning
                             opacity: enabled ? 1.0 : 0.45
                             model: [
-                                "深度多模态综合混合 (推荐 · 口播连贯 + 视觉防抖美学 + 静默剔除)",
-                                "口播智能粗剪 (Vlog/访谈：剔除废话重录 / 连贯保留 / 自动生成字幕)",
-                                "视觉审美优先 (航拍/风光/运动：保留优质稳定构图，过滤抖动与废片)",
-                                "纯语音静音切分 (基础粗切：仅切除无声与死寂停顿，保留有声片段)"
+                                "声音活动筛选（综合模式）",
+                                "口播片段筛选（转写取决于可用的识别服务）",
+                                "基础筛选（未提供视觉质量评估）",
+                                "声音活动切分（按音量检测静音）"
                             ]
                         }
 
@@ -1858,7 +1858,7 @@ ApplicationWindow {
                         }
 
                         Text {
-                            text: "提示：AI 将深度分析镜头晃动、语音清晰度与美学构图，自动剪除错句与废片，并按顺序铺满时间线。"
+                            text: "提示：主要按声音活动切分；视觉质量、稳定性和语音转写取决于所用版本及可用组件，请检查筛选结果。"
                             color: "#64748b"; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
                         }
                     }
@@ -3123,10 +3123,10 @@ ApplicationWindow {
                 enabled: !aiModal.isRunning
                 opacity: enabled ? 1.0 : 0.45
                 model: [
-                    "深度多模态综合混合 (推荐 · 口播连贯 + 视觉防抖美学 + 静默剔除)",
-                    "口播智能粗剪 (Vlog/访谈：剔除废话重录 / 连贯保留 / 自动生成字幕)",
-                    "视觉审美优先 (航拍/风光/运动：保留优质稳定构图，过滤抖动与废片)",
-                    "纯语音静音切分 (基础粗切：仅切除无声与死寂停顿，保留有声片段)"
+                    "声音活动筛选（综合模式）",
+                    "口播片段筛选（转写取决于可用的识别服务）",
+                    "基础筛选（未提供视觉质量评估）",
+                    "声音活动切分（按音量检测静音）"
                 ]
             }
 
@@ -3774,7 +3774,7 @@ ApplicationWindow {
         ColumnLayout {
             anchors.fill: parent; spacing: 10
             Text {
-                text: "规范：HEVC Main 10 (p010le) · BT.2020 · ARIB STD-B67 (HLG) · 65Mbps\n100% 符合 YouTube / B站 原生 4K60 HDR 审核标准"
+                text: "输出会重新编码。10-bit HLG 选项仅适用于已是 HLG 的素材；不会自动转换 D-Log 或 SDR 色彩。"
                 color: "#38bdf8"; font.pixelSize: 11; lineHeight: 1.3
             }
 
@@ -3821,7 +3821,7 @@ ApplicationWindow {
                 enabled: !exportModal.isRunning
                 opacity: enabled ? 1.0 : 0.45
                 model: [
-                    "10-Bit HDR (Apple Silicon ProRes / BT.2020 HLG / 65Mbps 原色母带)",
+                    "10-Bit HLG（仅用于 HLG 素材，不转换色彩）",
                     "8-Bit SDR (Rec.709 / 35Mbps 标准网络快速分享)"
                 ]
                 currentIndex: root.targetColor === "8bit" ? 1 : 0

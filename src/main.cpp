@@ -9,6 +9,12 @@
 #include "MediaEngine.h"
 
 int main(int argc, char *argv[]) {
+#ifdef Q_OS_MAC
+    // Finder applications do not inherit the shell's Homebrew search path.
+    QByteArray path = qgetenv("PATH");
+    path += ":/opt/homebrew/bin:/usr/local/bin";
+    qputenv("PATH", path);
+#endif
     QQuickStyle::setStyle("Basic");
     qputenv("QT_QUICK_CONTROLS_STYLE", "Basic");
 

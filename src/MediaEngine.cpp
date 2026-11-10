@@ -13,6 +13,10 @@
 #include <thread>
 #include <cmath>
 #include <algorithm>
+#include <QXmlStreamWriter>
+#include <QSaveFile>
+#include <QCryptographicHash>
+#include <QTemporaryDir>
 
 MediaEngine::MediaEngine(QObject *parent) : QObject(parent) {
     m_heartbeatTimer = new QTimer(this);
@@ -23,6 +27,10 @@ MediaEngine::MediaEngine(QObject *parent) : QObject(parent) {
 
 MediaEngine::~MediaEngine() {
     if (m_heartbeatTimer) m_heartbeatTimer->stop();
+    m_aiCancelled = true;
+    m_aiPaused = false;
+    m_exportCancelled = true;
+    for (auto &worker : m_workers) if (worker.joinable()) worker.join();
     if (m_exportProcess) {
         m_exportProcess->kill();
         m_exportProcess->waitForFinished();
@@ -100,7 +108,7 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
         filepath
     };
     ffprobe.start("ffprobe", args);
-    if (!ffprobe.waitForFinished(4000)) {
+    if (!ffprobe.waitForFinished(4000) || ffprobe.exitCode() != 0) {
         ffprobe.kill();
         return meta;
     }
@@ -109,6 +117,7 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
     QJsonObject rootObj = doc.object();
     QJsonArray streams = rootObj["streams"].toArray();
 
+    if (!doc.isObject()) return meta;
     QJsonObject vStream;
     for (const auto &s : streams) {
         if (s.toObject()["codec_type"].toString() == "video") {
@@ -117,12 +126,18 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
         }
     }
 
+    if (vStream.isEmpty()) return meta;
     double dur = rootObj["format"].toObject()["duration"].toString().toDouble();
     if (dur <= 0) dur = vStream["duration"].toString().toDouble();
     if (dur <= 0) dur = 10.0;
 
     int w = vStream["width"].toInt(3840);
     int h = vStream["height"].toInt(2160);
+    int rotation = vStream["tags"].toObject()["rotate"].toString().toInt();
+    for (const auto &side : vStream["side_data_list"].toArray()) {
+        if (side.toObject().contains("rotation")) rotation = side.toObject()["rotation"].toInt();
+    }
+    if (std::abs(rotation) % 180 == 90) std::swap(w, h);
     QString pixFmt = vStream["pix_fmt"].toString();
     bool is10bit = pixFmt.contains("10") || pixFmt.contains("p010");
 
@@ -135,7 +150,7 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
     meta["width"] = w;
     meta["height"] = h;
     meta["is_10bit"] = is10bit;
-    meta["color_desc"] = is10bit ? "10-Bit HDR (D-Log M)" : "8-Bit 标准";
+    meta["color_desc"] = is10bit ? "10-Bit" : "8-Bit";
     meta["orient"] = (h > w) ? "vertical" : "horizontal";
     meta["date"] = fi.lastModified().toString("yyyy-MM-dd");
     meta["time"] = fi.lastModified().toString("hh:mm:ss");
@@ -143,7 +158,8 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
     // 缩略图生成
     QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/sui_jian_thumbs";
     QDir().mkpath(cacheDir);
-    QString thumbPath = cacheDir + "/" + fi.fileName() + ".jpg";
+    QByteArray thumbKey = (fi.absoluteFilePath() + QString::number(fi.lastModified().toMSecsSinceEpoch()) + QString::number(fi.size())).toUtf8();
+    QString thumbPath = cacheDir + "/" + QCryptographicHash::hash(thumbKey, QCryptographicHash::Sha256).toHex() + ".jpg";
 
     if (!QFile::exists(thumbPath)) {
         QProcess ffmpeg;
@@ -163,7 +179,7 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
 }
 
 void MediaEngine::importPaths(const QStringList &paths) {
-    std::thread([this, paths]() {
+    m_workers.emplace_back([this, paths]() {
         QStringList validExts = {".mp4", ".mov", ".mkv", ".m4v"};
         QStringList files;
         QString dirForRecent;
@@ -197,8 +213,11 @@ void MediaEngine::importPaths(const QStringList &paths) {
             return;
         }
 
-        m_activeDeviceRoot = dirForRecent;
-        m_knownFiles = files;
+        QMetaObject::invokeMethod(this, [this, dirForRecent, files]() {
+            m_activeDeviceRoot = dirForRecent;
+            m_knownFiles = files;
+            m_isDeviceOnline = true;
+        });
 
         QVariantList mediaList;
         QSet<QString> dateSet;
@@ -218,12 +237,13 @@ void MediaEngine::importPaths(const QStringList &paths) {
         QMetaObject::invokeMethod(this, [this, dates, mediaList, sourceLabel]() {
             emit mediaLoaded(dates, mediaList, sourceLabel);
         });
-    }).detach();
+    });
 }
 
 void MediaEngine::checkDeviceHeartbeat() {
 #if defined(Q_OS_MAC)
     QDir volumesDir("/Volumes");
+    QSet<QString> detectedDevices;
     for (const auto &entry : volumesDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
         QString b = entry.fileName();
         if (b == "Macintosh HD" || b == "Recovery" || b == "Preboot" || b == "VM") continue;
@@ -233,12 +253,15 @@ void MediaEngine::checkDeviceHeartbeat() {
             for (const auto &sub : d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
                 QStringList vids = QDir(sub.absoluteFilePath()).entryList(QStringList() << "*.MP4" << "*.mp4" << "*.MOV" << "*.mov", QDir::Files);
                 if (!vids.isEmpty()) {
-                    emit usbDeviceDetected(b, sub.absoluteFilePath(), vids.size());
+                    detectedDevices.insert(b);
+                    if (!m_seenDevices.contains(b)) emit usbDeviceDetected(b, sub.absoluteFilePath(), vids.size());
                     break;
                 }
             }
         }
     }
+    for (const auto &name : m_seenDevices - detectedDevices) emit usbDeviceRemoved(name);
+    m_seenDevices = detectedDevices;
 #endif
 
     if (m_activeDeviceRoot.isEmpty()) return;
@@ -252,7 +275,16 @@ void MediaEngine::checkDeviceHeartbeat() {
     } else if (!m_isDeviceOnline && online) {
         m_isDeviceOnline = true;
         QVariantMap diff;
-        diff["new_count"] = 0;
+        QVariantList missing;
+        for (const auto &path : m_knownFiles) {
+            if (!QFileInfo::exists(path)) missing.append(QVariantMap{{"path", path}});
+        }
+        int newCount = 0;
+        for (const auto &entry : d.entryInfoList({"*.MP4", "*.mp4", "*.MOV", "*.mov", "*.mkv", "*.m4v"}, QDir::Files)) {
+            if (!m_knownFiles.contains(entry.absoluteFilePath())) ++newCount;
+        }
+        diff["missing"] = missing;
+        diff["new_count"] = newCount;
         emit deviceReconnected(QFileInfo(m_activeDeviceRoot).fileName(), diff);
     }
 }
@@ -333,22 +365,26 @@ QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &aud
     return voiceBlocks;
 }
 
-void MediaEngine::saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks) {
+bool MediaEngine::saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec) {
     QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     QDir().mkpath(cacheDir);
-    QFile f(cacheDir + "/suijian_ai_checkpoint.json");
+    QSaveFile f(cacheDir + "/suijian_ai_checkpoint.json");
     if (f.open(QIODevice::WriteOnly)) {
         QJsonObject obj;
         obj["paths"] = QJsonArray::fromStringList(selectedPaths);
         obj["current_index"] = currentIndex;
+        obj["mode"] = mode;
+        obj["target_duration"] = targetDurationSec;
         QJsonArray arr;
         for (const auto &t : tasks) arr.append(QJsonObject::fromVariantMap(t.toMap()));
         obj["tasks"] = arr;
         f.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        return f.commit();
     }
+    return false;
 }
 
-QPair<int, QVariantList> MediaEngine::loadAiCheckpoint(const QStringList &selectedPaths) {
+QPair<int, QVariantList> MediaEngine::loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode, double targetDurationSec) {
     QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     QFile f(cacheDir + "/suijian_ai_checkpoint.json");
     if (f.open(QIODevice::ReadOnly)) {
@@ -357,11 +393,11 @@ QPair<int, QVariantList> MediaEngine::loadAiCheckpoint(const QStringList &select
             QJsonObject obj = doc.object();
             QStringList savedPaths;
             for (const auto &p : obj["paths"].toArray()) savedPaths.append(p.toString());
-            if (savedPaths == selectedPaths) {
+            if (savedPaths == selectedPaths && obj["mode"].toString() == mode && obj["target_duration"].toDouble(-1) == targetDurationSec) {
                 int idx = obj["current_index"].toInt(0);
                 QVariantList list;
                 for (const auto &t : obj["tasks"].toArray()) list.append(t.toObject().toVariantMap());
-                return qMakePair(idx, list);
+                if (idx >= 0 && idx <= selectedPaths.size()) return qMakePair(idx, list);
             }
         }
     }
@@ -380,8 +416,13 @@ void MediaEngine::startAiScreening(const QVariantList &selectedPaths, int target
 }
 
 void MediaEngine::pauseAiScreening(const QString &reason) {
+    Q_UNUSED(reason);
+    if (!m_aiRunning) {
+        emit statusMessage("当前没有正在处理的筛选任务，请确认其他程序已停止读取设备");
+        return;
+    }
     m_aiPaused = true;
-    emit aiPaused(0, 0, reason.isEmpty() ? "用户请求暂停" : reason);
+    emit statusMessage("正在完成当前素材并保存进度，请稍候再拔出设备");
 }
 
 void MediaEngine::resumeAiScreening() {
@@ -392,17 +433,18 @@ void MediaEngine::resumeAiScreening() {
 void MediaEngine::cancelCurrentJob() {
     m_aiCancelled = true;
     m_aiPaused = false;
+    m_exportCancelled = true;
 }
 
 void MediaEngine::safeEjectDevice() {
     pauseAiScreening("准备拔出设备录像");
-    emit statusMessage("检查点已留存！现在可安全拔出相机去录像，插回后可随时续接。");
 }
 
 void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringList &selectedPaths, const QString &mode, double targetDurationSec, const QString &canvasMode, const QString &targetColor) {
     Q_UNUSED(canvasMode);
     Q_UNUSED(targetColor);
 
+    if (m_aiRunning.exchange(true)) { emit statusMessage("已有初筛任务正在停止，请稍后重试"); return; }
     m_aiPaused = false;
     m_aiCancelled = false;
 
@@ -419,14 +461,15 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
         }
     }
 
-    std::thread([this, poolMap, effPaths, mode, targetDurationSec]() {
+    m_workers.emplace_back([this, poolMap, effPaths, mode, targetDurationSec]() {
+        struct RunningGuard { std::atomic<bool> &flag; ~RunningGuard() { flag = false; } } guard{m_aiRunning};
         int total = effPaths.size();
         if (total == 0) {
             QMetaObject::invokeMethod(this, [this]() { emit aiFinished(QVariantList()); });
             return;
         }
 
-        auto cp = loadAiCheckpoint(effPaths);
+        auto cp = loadAiCheckpoint(effPaths, mode, targetDurationSec);
         int startIdx = cp.first;
         QVariantList allTasks = cp.second;
 
@@ -439,13 +482,17 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
 
         for (int idx = startIdx; idx < total; ++idx) {
             if (m_aiCancelled) {
-                saveAiCheckpoint(effPaths, idx, allTasks);
+                saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
                 return;
+            }
+            if (m_aiPaused) {
+                bool saved = saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
+                QMetaObject::invokeMethod(this, [this, idx, total, saved]() { emit aiPaused(idx, total, saved ? "检查点已保存" : "检查点保存失败，请勿退出应用"); });
             }
             while (m_aiPaused) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 if (m_aiCancelled) {
-                    saveAiCheckpoint(effPaths, idx, allTasks);
+                    saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
                     return;
                 }
             }
@@ -499,7 +546,6 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
                             clip["is_10bit"] = meta.value("is_10bit", false);
                             clip["thumb"] = meta.value("thumb", "");
                             clip["transpose"] = meta.value("transpose", 0);
-                            clip["text"] = QString("人声精彩原声片段 #%1").arg(sIdx + 1);
                             currentFileTasks.append(clip);
                         }
                     }
@@ -551,9 +597,21 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
                 }
             }
 
+            if (!QFileInfo::exists(path)) {
+                m_aiPaused = true;
+                --idx;
+                continue;
+            }
             allTasks.append(currentFileTasks);
-            saveAiCheckpoint(effPaths, idx + 1, allTasks);
+            saveAiCheckpoint(effPaths, idx + 1, allTasks, mode, targetDurationSec);
         }
+
+        if (m_aiPaused && !m_aiCancelled) {
+            bool saved = saveAiCheckpoint(effPaths, total, allTasks, mode, targetDurationSec);
+            QMetaObject::invokeMethod(this, [this, total, saved]() { emit aiPaused(total, total, saved ? "检查点已保存" : "检查点保存失败，请勿退出应用"); });
+            while (m_aiPaused && !m_aiCancelled) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        if (m_aiCancelled) return;
 
         // 目标成片节奏 / 时长预算控制 (targetDurationSec > 0 时生效)
         if (targetDurationSec > 0 && !allTasks.isEmpty()) {
@@ -565,7 +623,7 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
                 for (const auto &t : allTasks) {
                     QVariantMap c = t.toMap();
                     double oldDur = c.value("dur").toDouble();
-                    double newDur = std::max(2.0, oldDur * budgetRatio);
+                    double newDur = oldDur * budgetRatio;
                     double st = c.value("start").toDouble();
                     c["end"] = std::round((st + newDur) * 100.0) / 100.0;
                     c["dur"] = std::round(newDur * 100.0) / 100.0;
@@ -582,7 +640,7 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
             emit aiProgress(100.0, QString("完成初筛，共生成 %1 段精选镜头").arg(allTasks.size()));
             emit aiFinished(allTasks);
         });
-    }).detach();
+    });
 }
 
 void MediaEngine::startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor) {
@@ -591,17 +649,25 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
         return;
     }
 
+    if (m_exportRunning.exchange(true)) { emit exportFailed("上一个导出任务仍在停止，请稍后重试"); return; }
     QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    QString out = down + QString("/随剪_成片_%1.mp4").arg(QDateTime::currentDateTime().toString("MM月dd日_hhmm"));
+    QString out = down + QString("/随剪_成片_%1.mp4").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"));
 
-    std::thread([this, clips, masterCanvas, targetColor, out]() {
-        QString scratch = QStandardPaths::writableLocation(QStandardPaths::TempLocation) + QString("/suijian_export_%1").arg(QDateTime::currentMSecsSinceEpoch());
-        QDir().mkpath(scratch);
+    m_exportCancelled = false;
+    m_workers.emplace_back([this, clips, masterCanvas, targetColor, out]() {
+        struct RunningGuard { std::atomic<bool> &flag; ~RunningGuard() { flag = false; } } guard{m_exportRunning};
+        QTemporaryDir tempDir(QDir::tempPath() + "/suijian_export_XXXXXX");
+        if (!tempDir.isValid()) {
+            QMetaObject::invokeMethod(this, [this]() { emit exportFailed("无法创建临时目录"); });
+            return;
+        }
+        QString scratch = tempDir.path();
 
         int total = clips.size();
         QStringList renderedSlices;
 
         for (int i = 0; i < total; ++i) {
+            if (m_exportCancelled) { QDir(scratch).removeRecursively(); return; }
             QVariantMap t = clips[i].toMap();
             double pVal = (static_cast<double>(i) / total) * 92.0;
             QString fn = t.value("filename").toString();
@@ -611,6 +677,33 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
                 emit exportProgress(pVal, QString("正在硬件压制镜头 [%1/%2]: %3 (%4s)").arg(i + 1).arg(total).arg(fn).arg(dur, 0, 'f', 1));
             });
 
+            QProcess colorProbe;
+            colorProbe.start("ffprobe", {"-v", "error", "-show_entries", "stream=codec_type,color_transfer,color_primaries,pix_fmt", "-of", "json", t.value("src").toString()});
+            if (!colorProbe.waitForFinished(10000) || colorProbe.exitCode() != 0) {
+                QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("无法读取 %1 的色彩信息").arg(fn)); });
+                return;
+            }
+            auto streams = QJsonDocument::fromJson(colorProbe.readAllStandardOutput()).object().value("streams").toArray();
+            QJsonObject stream;
+            bool hasAudio = false;
+            for (const auto &entry : streams) {
+                auto item = entry.toObject();
+                if (item.value("codec_type").toString() == "video" && stream.isEmpty()) stream = item;
+                if (item.value("codec_type").toString() == "audio") hasAudio = true;
+            }
+            if (stream.isEmpty()) {
+                QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("%1 没有可用的视频轨").arg(fn)); });
+                return;
+            }
+            if (targetColor == "10bit") {
+                if (stream.value("color_transfer").toString() != "arib-std-b67" || stream.value("color_primaries").toString() != "bt2020" || !(stream.value("pix_fmt").toString().contains("10") || stream.value("pix_fmt").toString().contains("p010"))) {
+                    QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("%1 不是已标记的 10-bit BT.2020 HLG 素材；当前不支持转换为 HLG").arg(fn)); });
+                    return;
+                }
+            } else if (stream.value("color_transfer").toString() == "arib-std-b67" || stream.value("color_transfer").toString() == "smpte2084") {
+                QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("%1 是 HDR 素材，当前不支持转换为 SDR").arg(fn)); });
+                return;
+            }
             QString sName = QString("slice_%1.mp4").arg(i, 4, 10, QChar('0'));
             QString sPath = scratch + "/" + sName;
 
@@ -620,39 +713,52 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
                 "-t", QString::number(dur, 'f', 3),
                 "-i", t.value("src").toString()
             };
+            if (!hasAudio) args << "-f" << "lavfi" << "-t" << QString::number(dur, 'f', 3) << "-i" << "anullsrc=r=48000:cl=stereo";
 
-            QString vf;
-            if (masterCanvas == "vertical") {
-                vf = "scale=2160:3840:force_original_aspect_ratio=decrease,pad=2160:3840:(ow-iw)/2:(oh-ih)/2,setsar=1";
-            } else {
-                vf = "scale=3840:2160:force_original_aspect_ratio=decrease,pad=3840:2160:(ow-iw)/2:(oh-ih)/2,setsar=1";
-            }
-            args << "-vf" << vf;
+            const int w = masterCanvas == "vertical" ? 2160 : 3840;
+            const int h = masterCanvas == "vertical" ? 3840 : 2160;
+            const int bw = masterCanvas == "vertical" ? 270 : 480;
+            const int bh = masterCanvas == "vertical" ? 480 : 270;
+            const int rotation = t.value("transpose").toInt();
+            QString prefix = rotation == 1 || rotation == 2 ? QString("transpose=%1,").arg(rotation) : QString();
+            QString filter = QString("[0:v:0]%1split=2[fgin][bgin];"
+                "[bgin]scale=%2:%3:force_original_aspect_ratio=increase,crop=%2:%3,boxblur=8:2,"
+                "scale=%4:%5:flags=fast_bilinear,eq=brightness=-0.08:saturation=1.15[bg];"
+                "[fgin]scale=%4:%5:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];"
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=%6,setsar=1[outv]")
+                .arg(prefix).arg(bw).arg(bh).arg(w).arg(h).arg(targetColor == "10bit" ? "yuv420p10" : "yuv420");
+            args << "-filter_complex" << filter << "-map" << "[outv]" << "-map" << (hasAudio ? "0:a:0" : "1:a:0");
 
 #if defined(Q_OS_MAC)
             if (targetColor == "8bit") {
                 args << "-c:v" << "h264_videotoolbox" << "-b:v" << "35M" << "-pix_fmt" << "yuv420p";
             } else {
                 args << "-c:v" << "hevc_videotoolbox" << "-b:v" << "65M" << "-tag:v" << "hvc1"
-                     << "-color_primaries" << "bt2020" << "-color_trc" << "arib-std-b67" << "-colorspace" << "bt2020nc";
+                     << "-pix_fmt" << "p010le" << "-profile:v" << "main10" << "-color_primaries" << "bt2020" << "-color_trc" << "arib-std-b67" << "-colorspace" << "bt2020nc";
             }
 #else
             if (targetColor == "8bit") {
                 args << "-c:v" << "libx264" << "-preset" << "veryfast" << "-b:v" << "35M" << "-pix_fmt" << "yuv420p";
             } else {
                 args << "-c:v" << "libx265" << "-preset" << "veryfast" << "-b:v" << "65M" << "-tag:v" << "hvc1"
-                     << "-color_primaries" << "bt2020" << "-color_trc" << "arib-std-b67" << "-colorspace" << "bt2020nc";
+                     << "-pix_fmt" << "yuv420p10le" << "-profile:v" << "main10" << "-color_primaries" << "bt2020" << "-color_trc" << "arib-std-b67" << "-colorspace" << "bt2020nc";
             }
 #endif
-            args << "-c:a" << "aac" << "-b:a" << "320k" << "-ar" << "48000" << sPath;
+            args << "-r" << "60000/1001" << "-c:a" << "aac" << "-b:a" << "320k" << "-ar" << "48000" << "-ac" << "2" << sPath;
 
             QProcess proc;
             proc.start("ffmpeg", args);
-            proc.waitForFinished(120000);
-
-            if (QFile::exists(sPath) && QFileInfo(sPath).size() > 1000) {
-                renderedSlices.append(sPath);
+            while (!proc.waitForFinished(250)) {
+                if (m_exportCancelled) { proc.kill(); proc.waitForFinished(); QDir(scratch).removeRecursively(); return; }
+                if (proc.state() == QProcess::NotRunning) break;
             }
+            if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0 || !QFile::exists(sPath) || QFileInfo(sPath).size() == 0) {
+                QString error = QString::fromUtf8(proc.readAllStandardError()).right(1200);
+                QDir(scratch).removeRecursively();
+                QMetaObject::invokeMethod(this, [this, fn, error]() { emit exportFailed(QString("镜头 %1 导出失败：%2").arg(fn, error)); });
+                return;
+            }
+            renderedSlices.append(sPath);
         }
 
         if (renderedSlices.isEmpty()) {
@@ -685,21 +791,26 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
 
         QProcess concatProc;
         concatProc.start("ffmpeg", concatArgs);
-        concatProc.waitForFinished(180000);
+        while (!concatProc.waitForFinished(250)) {
+            if (m_exportCancelled) { concatProc.kill(); concatProc.waitForFinished(); QFile::remove(out); QDir(scratch).removeRecursively(); return; }
+            if (concatProc.state() == QProcess::NotRunning) break;
+        }
+        bool concatOk = concatProc.exitStatus() == QProcess::NormalExit && concatProc.exitCode() == 0;
 
         QDir(scratch).removeRecursively();
 
-        if (QFile::exists(out) && QFileInfo(out).size() > 100000) {
+        if (concatOk && QFile::exists(out) && QFileInfo(out).size() > 0) {
             QMetaObject::invokeMethod(this, [this, out]() {
                 emit exportProgress(100.0, "压制成功落盘！");
                 emit exportFinished(out);
             });
         } else {
+            QFile::remove(out);
             QMetaObject::invokeMethod(this, [this]() {
                 emit exportFailed("最终合并失败，请检查硬盘空间");
             });
         }
-    }).detach();
+    });
 }
 
 void MediaEngine::startExport(const QString &outputPath, const QString &format, int width, int height, int fps) {
@@ -814,12 +925,16 @@ void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterC
         if (!knownAssets.contains(src)) {
             knownAssets.append(src);
             int aid = knownAssets.size() + 1;
-            double dur = c.value("dur", 10.0).toDouble();
-            ts << QString("    <asset id=\"r%1\" name=\"%2\" src=\"file://%3\" start=\"0s\" duration=\"%4s\" hasVideo=\"1\" hasAudio=\"1\" format=\"r1\"/>\n")
+            double dur = probeFile(src).value("duration", 0.0).toDouble();
+            for (const auto &clip : clips) {
+                auto other = clip.toMap();
+                if (other.value("src").toString() == src) dur = std::max(dur, other.value("end").toDouble());
+            }
+            ts << QString("    <asset id=\"r%1\" name=\"%2\" src=\"%3\" start=\"0s\" duration=\"%4/1000s\" hasVideo=\"1\" hasAudio=\"1\" format=\"r1\"/>\n")
                   .arg(aid)
-                  .arg(c.value("filename").toString())
-                  .arg(src)
-                  .arg(dur, 0, 'f', 3);
+                  .arg(c.value("filename").toString().toHtmlEscaped())
+                  .arg(QString::fromUtf8(QUrl::fromLocalFile(src).toEncoded()).toHtmlEscaped())
+                  .arg(qRound64(dur * 1000));
         }
     }
     ts << "  </resources>\n";
@@ -830,7 +945,7 @@ void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterC
     double totalSec = 0.0;
     for (const auto &item : clips) totalSec += item.toMap().value("dur", 0.0).toDouble();
 
-    ts << QString("        <sequence format=\"r1\" duration=\"%1s\" tcStart=\"0s\" tcFormat=\"NDF\">\n").arg(totalSec, 0, 'f', 3);
+    ts << QString("        <sequence format=\"r1\" duration=\"%1/1000s\" tcStart=\"0s\" tcFormat=\"NDF\">\n").arg(qRound64(totalSec * 1000));
     ts << "          <spine>\n";
 
     double offsetSec = 0.0;
@@ -841,13 +956,13 @@ void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterC
         double startSec = c.value("start", 0.0).toDouble();
         double durSec = c.value("dur", 0.0).toDouble();
 
-        ts << QString("            <asset-clip ref=\"r%1\" name=\"镜头_%2_%3\" offset=\"%4s\" start=\"%5s\" duration=\"%6s\" format=\"r1\"/>\n")
+        ts << QString("            <asset-clip ref=\"r%1\" name=\"镜头_%2_%3\" offset=\"%4/1000s\" start=\"%5/1000s\" duration=\"%6/1000s\" format=\"r1\"/>\n")
               .arg(aid)
               .arg(i + 1)
-              .arg(c.value("filename").toString())
-              .arg(offsetSec, 0, 'f', 3)
-              .arg(startSec, 0, 'f', 3)
-              .arg(durSec, 0, 'f', 3);
+              .arg(c.value("filename").toString().toHtmlEscaped())
+              .arg(qRound64(offsetSec * 1000))
+              .arg(qRound64(startSec * 1000))
+              .arg(qRound64(durSec * 1000));
         offsetSec += durSec;
     }
 

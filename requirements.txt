@@ -1,5 +1,0 @@
-pyside6-essentials>=6.5.0
-pyside6-addons>=6.5.0
-pillow>=10.0.0
-pyobjc-core>=10.0; sys_platform == 'darwin'
-pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'

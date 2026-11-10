@@ -8,7 +8,10 @@
 #include <QThread>
 #include <QProcess>
 #include <QTimer>
+#include <QSet>
 #include <atomic>
+#include <thread>
+#include <vector>
 
 class MediaEngine : public QObject {
     Q_OBJECT
@@ -59,16 +62,21 @@ private:
     QVariantMap probeFile(const QString &filepath);
     QString extractAudioWav(const QString &videoPath);
     QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3);
-    void saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks);
-    QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths);
+    bool saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec);
+    QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode, double targetDurationSec);
     void clearAiCheckpoint();
 
     QString m_activeDeviceRoot;
     QStringList m_knownFiles;
+    QSet<QString> m_seenDevices;
     bool m_isDeviceOnline = true;
     QTimer *m_heartbeatTimer = nullptr;
 
     std::atomic<bool> m_aiPaused{false};
+    std::atomic<bool> m_aiRunning{false};
+    std::atomic<bool> m_exportRunning{false};
+    std::atomic<bool> m_exportCancelled{false};
+    std::vector<std::thread> m_workers;
     std::atomic<bool> m_aiCancelled{false};
     QVariantList m_currentAiTasks;
     QProcess *m_exportProcess = nullptr;
