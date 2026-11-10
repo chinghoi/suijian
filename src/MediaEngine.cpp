@@ -1,4 +1,6 @@
 #include "MediaEngine.h"
+#include "VisualScreening.h"
+#include "ColorPipeline.h"
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
@@ -141,6 +143,9 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
     QString pixFmt = vStream["pix_fmt"].toString();
     bool is10bit = pixFmt.contains("10") || pixFmt.contains("p010");
 
+    bool hasAudio = false;
+    for (const auto &stream : streams) hasAudio |= stream.toObject()["codec_type"].toString() == "audio";
+    meta["has_audio"] = hasAudio;
     meta["path"] = filepath;
     meta["filename"] = fi.fileName();
     meta["duration"] = dur;
@@ -289,42 +294,27 @@ void MediaEngine::checkDeviceHeartbeat() {
     }
 }
 
-QString MediaEngine::extractAudioWav(const QString &videoPath) {
-    QString tmpDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation) + QString("/suijian_speech_%1").arg(QDateTime::currentMSecsSinceEpoch());
-    QDir().mkpath(tmpDir);
-    QString outWav = tmpDir + "/audio.wav";
-
-    QProcess ffmpeg;
-    QStringList args = {
-        "-y", "-i", videoPath,
-        "-map", "0:a:0", "-c:a", "pcm_s16le",
-        "-ar", "16000", "-ac", "1",
-        outWav
-    };
-    ffmpeg.start("ffmpeg", args);
-    if (!ffmpeg.waitForFinished(60000)) {
-        ffmpeg.kill();
-        return QString();
-    }
-    if (QFile::exists(outWav) && QFileInfo(outWav).size() > 500) {
-        return outWav;
-    }
-    return QString();
-}
-
-QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb, double minSilenceDur, double minSpeechDur) {
+QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb, double minSilenceDur, double minSpeechDur, QString *error) {
     QList<QPair<double, double>> voiceBlocks;
     QProcess ffmpeg;
     QStringList args = {
         "-y", "-i", audioOrVideoPath,
-        "-vn",
+        "-map", "0:a:0", "-vn",
         "-af", QString("silencedetect=noise=%1dB:d=%2").arg(noiseDb).arg(minSilenceDur),
         "-f", "null", "-"
     };
     ffmpeg.start("ffmpeg", args);
-    if (!ffmpeg.waitForFinished(60000)) {
-        ffmpeg.kill();
-        return voiceBlocks;
+    if (!ffmpeg.waitForStarted(5000)) {
+        if (error) *error = "无法启动 FFmpeg";
+        return {};
+    }
+    while (!ffmpeg.waitForFinished(100)) {
+        if (m_aiCancelled) { ffmpeg.kill(); ffmpeg.waitForFinished(5000); return {}; }
+        if (ffmpeg.state() == QProcess::NotRunning) break;
+    }
+    if (ffmpeg.exitStatus() != QProcess::NormalExit || ffmpeg.exitCode() != 0) {
+        if (error) *error = "音频分析失败: " + QString::fromUtf8(ffmpeg.readAllStandardError()).right(1000);
+        return {};
     }
 
     QString errOut = QString::fromUtf8(ffmpeg.readAllStandardError());
@@ -347,7 +337,7 @@ QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &aud
     if (probe.waitForFinished(3000)) {
         totalDur = probe.readAllStandardOutput().trimmed().toDouble();
     }
-    if (totalDur <= 0.0) totalDur = 60.0;
+    if (totalDur <= 0.0) { if (error) *error = "无法读取音频时长"; return {}; }
 
     double curStart = 0.0;
     for (const auto &p : silences) {
@@ -365,12 +355,64 @@ QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &aud
     return voiceBlocks;
 }
 
+QList<QPair<double, double>> MediaEngine::detectVisualSegments(const QString &path, double duration, QString &error) {
+    constexpr int width = 160, height = 90, frameBytes = width * height;
+    constexpr double step = 0.5;
+    QProcess process;
+    // One decode pass; only two small grayscale frames are retained in memory.
+    process.start("ffmpeg", {"-v", "error", "-i", path, "-map", "0:v:0", "-an",
+        "-vf", "fps=2,scale=160:90:flags=fast_bilinear,format=gray", "-f", "rawvideo", "pipe:1"});
+    if (!process.waitForStarted(5000)) { error = "无法启动 FFmpeg"; return {}; }
+    QByteArray pending, previous, diagnostic;
+    QList<QPair<double, double>> spans;
+    qint64 index = 0;
+    double runStart = -1;
+    auto closeRun = [&](double end) {
+        end = std::min(duration, end);
+        if (runStart >= 0 && end - runStart >= 1.5) spans.append(qMakePair(runStart, end));
+        runStart = -1;
+    };
+    auto drain = [&]() {
+        pending += process.readAllStandardOutput();
+        diagnostic = (diagnostic + process.readAllStandardError()).right(1500);
+        qsizetype offset = 0;
+        while (pending.size() - offset >= frameBytes) {
+            const char *frame = pending.constData() + offset;
+            const bool usable = screening::usableFrame(
+                reinterpret_cast<const std::uint8_t *>(frame),
+                previous.isEmpty() ? nullptr : reinterpret_cast<const std::uint8_t *>(previous.constData()), width, height);
+            if (usable && runStart < 0) runStart = index * step;
+            if (!usable) closeRun(index * step);
+            previous = QByteArray(frame, frameBytes);
+            ++index;
+            offset += frameBytes;
+        }
+        pending.remove(0, offset);
+    };
+    while (process.state() != QProcess::NotRunning) {
+        process.waitForReadyRead(100);
+        drain();
+        if (m_aiCancelled) {
+            process.kill(); process.waitForFinished(5000);
+            return {};
+        }
+    }
+    drain();
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 || index == 0 || !pending.isEmpty()) {
+        error = "画面分析失败: " + diagnostic;
+        return {};
+    }
+    closeRun(index * step);
+    return spans;
+}
+
 bool MediaEngine::saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec) {
     QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
     QDir().mkpath(cacheDir);
     QSaveFile f(cacheDir + "/suijian_ai_checkpoint.json");
     if (f.open(QIODevice::WriteOnly)) {
         QJsonObject obj;
+        obj["screening_version"] = 2;
         obj["paths"] = QJsonArray::fromStringList(selectedPaths);
         obj["current_index"] = currentIndex;
         obj["mode"] = mode;
@@ -393,7 +435,7 @@ QPair<int, QVariantList> MediaEngine::loadAiCheckpoint(const QStringList &select
             QJsonObject obj = doc.object();
             QStringList savedPaths;
             for (const auto &p : obj["paths"].toArray()) savedPaths.append(p.toString());
-            if (savedPaths == selectedPaths && obj["mode"].toString() == mode && obj["target_duration"].toDouble(-1) == targetDurationSec) {
+            if (obj["screening_version"].toInt() == 2 && savedPaths == selectedPaths && obj["mode"].toString() == mode && obj["target_duration"].toDouble(-1) == targetDurationSec) {
                 int idx = obj["current_index"].toInt(0);
                 QVariantList list;
                 for (const auto &t : obj["tasks"].toArray()) list.append(t.toObject().toVariantMap());
@@ -443,6 +485,11 @@ void MediaEngine::safeEjectDevice() {
 void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringList &selectedPaths, const QString &mode, double targetDurationSec, const QString &canvasMode, const QString &targetColor) {
     Q_UNUSED(canvasMode);
     Q_UNUSED(targetColor);
+
+    if (mode != "1" && mode != "2" && mode != "3" && mode != "4") {
+        emit aiFailed("未知的筛选模式");
+        return;
+    }
 
     if (m_aiRunning.exchange(true)) { emit statusMessage("已有初筛任务正在停止，请稍后重试"); return; }
     m_aiPaused = false;
@@ -509,92 +556,55 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
             });
 
             QVariantList currentFileTasks;
-
-            // 口播模式 (mode 4) 或 深度综合多模态混合模式 (mode 3)
-            if ((mode == "3" || mode == "4") && dur > 2.0) {
-                double pAud = std::max(1.0, std::min(99.0, ((idx + 0.15 * 0.6) / total) * 100.0));
-                QMetaObject::invokeMethod(this, [this, pAud, idx, total, filename]() {
-                    emit aiProgress(pAud, QString("[%1/%2] 提取音频流: %3").arg(idx + 1).arg(total).arg(filename));
-                });
-
-                QString wavPath = extractAudioWav(path);
-                if (!wavPath.isEmpty()) {
-                    double pVad = std::max(1.0, std::min(99.0, ((idx + 0.35 * 0.6) / total) * 100.0));
-                    QMetaObject::invokeMethod(this, [this, pVad, idx, total, filename]() {
-                        emit aiProgress(pVad, QString("[%1/%2] 分析语音停顿区间: %3").arg(idx + 1).arg(total).arg(filename));
-                    });
-
-                    auto voiceSegs = detectVoiceSegments(wavPath, -30.0, 0.6, 0.3);
-                    QFile::remove(wavPath);
-                    QDir().rmdir(QFileInfo(wavPath).absolutePath());
-
-                    if (!voiceSegs.isEmpty()) {
-                        for (int sIdx = 0; sIdx < voiceSegs.size(); ++sIdx) {
-                            double st = std::max(0.0, voiceSegs[sIdx].first - 0.2);
-                            double en = std::min(dur, voiceSegs[sIdx].second + 0.3);
-                            double clipDur = en - st;
-                            if (clipDur < 1.0) continue;
-
-                            QVariantMap clip;
-                            clip["src"] = path;
-                            clip["filename"] = filename;
-                            clip["start"] = std::round(st * 100.0) / 100.0;
-                            clip["end"] = std::round(en * 100.0) / 100.0;
-                            clip["dur"] = std::round(clipDur * 100.0) / 100.0;
-                            clip["dur_str"] = QString("%1s").arg(clipDur, 0, 'f', 1);
-                            clip["orient"] = meta.value("orient", "horizontal");
-                            clip["is_10bit"] = meta.value("is_10bit", false);
-                            clip["thumb"] = meta.value("thumb", "");
-                            clip["transpose"] = meta.value("transpose", 0);
-                            currentFileTasks.append(clip);
-                        }
+            QString analysisError;
+            std::vector<screening::Span> candidates;
+            if (mode != "1") {
+                // No audio is a valid empty result; it is not a reason to retain
+                // the first 25 seconds of silent footage.
+                QVariantMap sourceMeta = meta.contains("has_audio") ? meta : probeFile(path);
+                if (sourceMeta.isEmpty()) analysisError = "无法读取素材信息";
+                else if (sourceMeta.value("has_audio").toBool()) {
+                    const auto voices = detectVoiceSegments(path, -30.0,
+                        mode == "4" ? 0.6 : 0.8, 0.3, &analysisError);
+                    for (const auto &voice : voices) {
+                        const double padding = mode == "4" ? 0.15 : 0.0;
+                        candidates.emplace_back(voice.first - padding, voice.second + padding);
                     }
                 }
             }
-
-            // 模式 1 / 2 或模式 3 兜底
-            if (currentFileTasks.isEmpty()) {
-                double pSil = std::max(1.0, std::min(99.0, ((idx + 0.4) / total) * 100.0));
-                QMetaObject::invokeMethod(this, [this, pSil, idx, total, filename]() {
-                    emit aiProgress(pSil, QString("[%1/%2] 分析音频静音与人声区间: %3").arg(idx + 1).arg(total).arg(filename));
+            if ((mode == "1" || mode == "3") && analysisError.isEmpty() && !m_aiCancelled) {
+                QMetaObject::invokeMethod(this, [this, pInit, filename]() {
+                    emit aiProgress(pInit, "检查画面曝光、细节与变化幅度: " + filename);
                 });
-
-                auto voiceSegs = detectVoiceSegments(path, -30.0, 0.8, 1.2);
-                if (!voiceSegs.isEmpty()) {
-                    for (int sIdx = 0; sIdx < voiceSegs.size(); ++sIdx) {
-                        double st = voiceSegs[sIdx].first;
-                        double en = voiceSegs[sIdx].second;
-                        double clipDur = en - st;
-                        if (clipDur < 1.0) continue;
-
-                        QVariantMap clip;
-                        clip["src"] = path;
-                        clip["filename"] = filename;
-                        clip["start"] = std::round(st * 100.0) / 100.0;
-                        clip["end"] = std::round(en * 100.0) / 100.0;
-                        clip["dur"] = std::round(clipDur * 100.0) / 100.0;
-                        clip["dur_str"] = QString("%1s").arg(clipDur, 0, 'f', 1);
-                        clip["orient"] = meta.value("orient", "horizontal");
-                        clip["is_10bit"] = meta.value("is_10bit", false);
-                        clip["thumb"] = meta.value("thumb", "");
-                        clip["transpose"] = meta.value("transpose", 0);
-                        currentFileTasks.append(clip);
-                    }
-                } else {
-                    double clipDur = std::min(dur, 25.0);
-                    QVariantMap clip;
-                    clip["src"] = path;
-                    clip["filename"] = filename;
-                    clip["start"] = 0.0;
-                    clip["end"] = std::round(clipDur * 100.0) / 100.0;
-                    clip["dur"] = std::round(clipDur * 100.0) / 100.0;
-                    clip["dur_str"] = QString("%1s").arg(clipDur, 0, 'f', 1);
-                    clip["orient"] = meta.value("orient", "horizontal");
-                    clip["is_10bit"] = meta.value("is_10bit", false);
-                    clip["thumb"] = meta.value("thumb", "");
-                    clip["transpose"] = meta.value("transpose", 0);
-                    currentFileTasks.append(clip);
-                }
+                const auto visuals = detectVisualSegments(path, dur, analysisError);
+                for (const auto &visual : visuals) candidates.emplace_back(visual.first, visual.second);
+            }
+            if (m_aiCancelled) {
+                saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
+                return;
+            }
+            if (!analysisError.isEmpty() && QFileInfo::exists(path)) {
+                saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
+                QMetaObject::invokeMethod(this, [this, filename, analysisError]() {
+                    emit aiFailed(filename + ": " + analysisError);
+                });
+                return;
+            }
+            for (const auto &span : screening::mergeSpans(std::move(candidates), dur)) {
+                const double clipDur = span.second - span.first;
+                if (clipDur < 0.5) continue;
+                QVariantMap clip;
+                clip["src"] = path;
+                clip["filename"] = filename;
+                clip["start"] = span.first;
+                clip["end"] = span.second;
+                clip["dur"] = clipDur;
+                clip["dur_str"] = QString("%1s").arg(clipDur, 0, 'f', 1);
+                clip["orient"] = meta.value("orient", "horizontal");
+                clip["is_10bit"] = meta.value("is_10bit", false);
+                clip["thumb"] = meta.value("thumb", "");
+                clip["transpose"] = meta.value("transpose", 0);
+                currentFileTasks.append(clip);
             }
 
             if (!QFileInfo::exists(path)) {
@@ -644,6 +654,10 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
 }
 
 void MediaEngine::startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor) {
+    if (targetColor != "8bit" && targetColor != "10bit") {
+        emit exportFailed("未知的导出色彩规格");
+        return;
+    }
     if (clips.isEmpty()) {
         emit exportFailed("时间线没有镜头可供导出");
         return;
@@ -665,6 +679,8 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
 
         int total = clips.size();
         QStringList renderedSlices;
+        bool checkedFilters = false;
+        bool hasToneMapping = false;
 
         for (int i = 0; i < total; ++i) {
             if (m_exportCancelled) { QDir(scratch).removeRecursively(); return; }
@@ -678,7 +694,7 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             });
 
             QProcess colorProbe;
-            colorProbe.start("ffprobe", {"-v", "error", "-show_entries", "stream=codec_type,color_transfer,color_primaries,pix_fmt", "-of", "json", t.value("src").toString()});
+            colorProbe.start("ffprobe", {"-v", "error", "-show_streams", "-of", "json", t.value("src").toString()});
             if (!colorProbe.waitForFinished(10000) || colorProbe.exitCode() != 0) {
                 QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("无法读取 %1 的色彩信息").arg(fn)); });
                 return;
@@ -695,14 +711,37 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
                 QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("%1 没有可用的视频轨").arg(fn)); });
                 return;
             }
+            QString colorFilter;
             if (targetColor == "10bit") {
                 if (stream.value("color_transfer").toString() != "arib-std-b67" || stream.value("color_primaries").toString() != "bt2020" || !(stream.value("pix_fmt").toString().contains("10") || stream.value("pix_fmt").toString().contains("p010"))) {
                     QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("%1 不是已标记的 10-bit BT.2020 HLG 素材；当前不支持转换为 HLG").arg(fn)); });
                     return;
                 }
             } else if (stream.value("color_transfer").toString() == "arib-std-b67" || stream.value("color_transfer").toString() == "smpte2084") {
-                QMetaObject::invokeMethod(this, [this, fn]() { emit exportFailed(QString("%1 是 HDR 素材，当前不支持转换为 SDR").arg(fn)); });
-                return;
+                if (!checkedFilters) {
+                    QProcess filters;
+                    filters.start("ffmpeg", {"-hide_banner", "-filters"});
+                    if (filters.waitForFinished(10000) && filters.exitCode() == 0) {
+                        const auto listing = filters.readAllStandardOutput();
+                        bool zscale = false, tonemap = false;
+                        for (const auto &line : listing.split('\n')) {
+                            const auto fields = line.simplified().split(' ');
+                            if (fields.size() > 1) {
+                                zscale |= fields[1] == "zscale";
+                                tonemap |= fields[1] == "tonemap";
+                            }
+                        }
+                        hasToneMapping = zscale && tonemap;
+                    }
+                    checkedFilters = true;
+                }
+                const auto conversion = color::toSdr(stream, hasToneMapping);
+                if (!conversion.error.isEmpty()) {
+                    QMetaObject::invokeMethod(this, [this, fn, conversion]() { emit exportFailed(fn + ": " + conversion.error); });
+                    return;
+                }
+                colorFilter = conversion.filter + ",";
+                QMetaObject::invokeMethod(this, [this, pVal, fn]() { emit exportProgress(pVal, "HDR 转 Rec.709 SDR: " + fn); });
             }
             QString sName = QString("slice_%1.mp4").arg(i, 4, 10, QChar('0'));
             QString sPath = scratch + "/" + sName;
@@ -721,6 +760,7 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             const int bh = masterCanvas == "vertical" ? 480 : 270;
             const int rotation = t.value("transpose").toInt();
             QString prefix = rotation == 1 || rotation == 2 ? QString("transpose=%1,").arg(rotation) : QString();
+            prefix += colorFilter;
             QString filter = QString("[0:v:0]%1split=2[fgin][bgin];"
                 "[bgin]scale=%2:%3:force_original_aspect_ratio=increase,crop=%2:%3,boxblur=8:2,"
                 "scale=%4:%5:flags=fast_bilinear,eq=brightness=-0.08:saturation=1.15[bg];"
@@ -744,6 +784,10 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
                      << "-pix_fmt" << "yuv420p10le" << "-profile:v" << "main10" << "-color_primaries" << "bt2020" << "-color_trc" << "arib-std-b67" << "-colorspace" << "bt2020nc";
             }
 #endif
+            if (!colorFilter.isEmpty()) {
+                args << "-color_primaries" << "bt709" << "-color_trc" << "bt709"
+                     << "-colorspace" << "bt709" << "-color_range" << "tv";
+            }
             args << "-r" << "60000/1001" << "-c:a" << "aac" << "-b:a" << "320k" << "-ar" << "48000" << "-ac" << "2" << sPath;
 
             QProcess proc;

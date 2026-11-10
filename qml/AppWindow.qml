@@ -663,7 +663,16 @@ ApplicationWindow {
             aiModal.statusText = stepText
         }
 
+        function onAiFailed(message) {
+            aiModal.isRunning = false
+            aiModal.isPaused = false
+            aiModal.progress = 0
+            aiModal.statusText = message
+            statusBanner.show("筛选失败，原时间线已保留：" + message)
+        }
+
         function onAiFinished(tasks) {
+
             aiModal.isRunning = false
             aiModal.progress = 0
             aiModal.isPaused = false
@@ -1745,9 +1754,9 @@ ApplicationWindow {
                             enabled: !aiModal.isRunning
                             opacity: enabled ? 1.0 : 0.45
                             model: [
-                                "声音活动筛选（综合模式）",
-                                "口播片段筛选（转写取决于可用的识别服务）",
-                                "基础筛选（未提供视觉质量评估）",
+                                "综合筛选（声音片段 + 画面合格片段）",
+                                "口播停顿切分（保留呼吸间隔，不生成字幕）",
+                                "画面筛选（曝光、细节、画面变化）",
                                 "声音活动切分（按音量检测静音）"
                             ]
                         }
@@ -1858,7 +1867,7 @@ ApplicationWindow {
                         }
 
                         Text {
-                            text: "提示：主要按声音活动切分；视觉质量、稳定性和语音转写取决于所用版本及可用组件，请检查筛选结果。"
+                            text: "提示：画面筛选采用每秒两帧的基础质量检查，可能误判快速运动或低细节画面；声音筛选不识别人声内容，请检查结果。"
                             color: "#64748b"; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
                         }
                     }
@@ -3123,9 +3132,9 @@ ApplicationWindow {
                 enabled: !aiModal.isRunning
                 opacity: enabled ? 1.0 : 0.45
                 model: [
-                    "声音活动筛选（综合模式）",
-                    "口播片段筛选（转写取决于可用的识别服务）",
-                    "基础筛选（未提供视觉质量评估）",
+                    "综合筛选（声音片段 + 画面合格片段）",
+                    "口播停顿切分（保留呼吸间隔，不生成字幕）",
+                    "画面筛选（曝光、细节、画面变化）",
                     "声音活动切分（按音量检测静音）"
                 ]
             }
@@ -3774,8 +3783,10 @@ ApplicationWindow {
         ColumnLayout {
             anchors.fill: parent; spacing: 10
             Text {
-                text: "输出会重新编码。10-bit HLG 选项仅适用于已是 HLG 的素材；不会自动转换 D-Log 或 SDR 色彩。"
+                text: "SDR 适合普通屏幕分享，HLG/PQ 素材会转换亮度与色彩。HLG 输出仅接受 HLG 素材；D-Log 素材需另行调色。"
                 color: "#38bdf8"; font.pixelSize: 11; lineHeight: 1.3
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
             }
 
             RowLayout {

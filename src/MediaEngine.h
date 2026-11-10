@@ -46,6 +46,7 @@ signals:
     void scanError(const QString &errorMessage);
     void aiProgress(double percent, const QString &stepText);
     void aiFinished(const QVariantList &tasks);
+    void aiFailed(const QString &errorMessage);
     void aiPaused(int completed, int total, const QString &reason);
     void aiResumed();
     void speechSegmentsReady(const QString &videoPath, const QVariantList &segments);
@@ -60,8 +61,8 @@ signals:
 private:
     void checkDeviceHeartbeat();
     QVariantMap probeFile(const QString &filepath);
-    QString extractAudioWav(const QString &videoPath);
-    QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3);
+    QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr);
+    QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error);
     bool saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec);
     QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode, double targetDurationSec);
     void clearAiCheckpoint();

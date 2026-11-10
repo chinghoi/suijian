@@ -12,6 +12,8 @@ qt_add_executable(DJIEditor
     src/main.cpp
     src/MediaEngine.cpp
     src/MediaEngine.h
+    src/ColorPipeline.cpp
+    src/ColorPipeline.h
 )
 
 qt_add_qml_module(DJIEditor
@@ -28,6 +30,26 @@ target_link_libraries(DJIEditor PRIVATE
     Qt6::QuickControls2
     Qt6::Multimedia
 )
+
+include(CTest)
+if (BUILD_TESTING)
+    add_executable(visual_screening_test tests/VisualScreeningTest.cpp)
+    target_include_directories(visual_screening_test PRIVATE src)
+    add_test(NAME visual_screening COMMAND visual_screening_test)
+    qt_add_executable(screening_integration_test
+        tests/ScreeningIntegrationTest.cpp src/MediaEngine.cpp src/MediaEngine.h src/ColorPipeline.cpp)
+    target_include_directories(screening_integration_test PRIVATE src)
+    target_link_libraries(screening_integration_test PRIVATE Qt6::Core)
+    set_target_properties(screening_integration_test PROPERTIES MACOSX_BUNDLE FALSE)
+    add_test(NAME screening_integration COMMAND screening_integration_test)
+    set_tests_properties(screening_integration PROPERTIES TIMEOUT 180)
+    qt_add_executable(color_pipeline_test tests/ColorPipelineTest.cpp src/ColorPipeline.cpp)
+    target_include_directories(color_pipeline_test PRIVATE src)
+    target_link_libraries(color_pipeline_test PRIVATE Qt6::Core)
+    set_target_properties(color_pipeline_test PROPERTIES MACOSX_BUNDLE FALSE)
+    add_test(NAME color_pipeline COMMAND color_pipeline_test)
+    set_tests_properties(color_pipeline PROPERTIES TIMEOUT 120)
+endif()
 
 if (APPLE)
     set_target_properties(DJIEditor PROPERTIES
