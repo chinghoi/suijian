@@ -133,15 +133,16 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
     if (vStream.isEmpty()) return meta;
     double dur = rootObj["format"].toObject()["duration"].toString().toDouble();
     if (dur <= 0) dur = vStream["duration"].toString().toDouble();
-    if (dur <= 0) dur = 10.0;
-
-    int w = vStream["width"].toInt(3840);
-    int h = vStream["height"].toInt(2160);
+    const int w = vStream["width"].toInt();
+    const int h = vStream["height"].toInt();
+    if (dur <= 0 || w <= 0 || h <= 0) return meta;
+    int dispW = w;
+    int dispH = h;
     int rotation = vStream["tags"].toObject()["rotate"].toString().toInt();
     for (const auto &side : vStream["side_data_list"].toArray()) {
         if (side.toObject().contains("rotation")) rotation = side.toObject()["rotation"].toInt();
     }
-    if (std::abs(rotation) % 180 == 90) std::swap(w, h);
+    if (std::abs(rotation) % 180 == 90) std::swap(dispW, dispH);
     QString pixFmt = vStream["pix_fmt"].toString();
     bool is10bit = pixFmt.contains("10") || pixFmt.contains("p010");
 
@@ -154,11 +155,11 @@ QVariantMap MediaEngine::probeFile(const QString &filepath) {
     int mins = static_cast<int>(dur) / 60;
     int secs = static_cast<int>(dur) % 60;
     meta["duration_str"] = QString("%1:%2").arg(mins, 2, 10, QChar('0')).arg(secs, 2, 10, QChar('0'));
-    meta["width"] = w;
-    meta["height"] = h;
+    meta["width"] = dispW;
+    meta["height"] = dispH;
     meta["is_10bit"] = is10bit;
     meta["color_desc"] = is10bit ? "10-Bit" : "8-Bit";
-    meta["orient"] = (h > w) ? "vertical" : "horizontal";
+    meta["orient"] = (dispH > dispW) ? "vertical" : "horizontal";
     meta["date"] = fi.lastModified().toString("yyyy-MM-dd");
     meta["time"] = fi.lastModified().toString("hh:mm:ss");
 
@@ -506,6 +507,7 @@ void MediaEngine::pauseAiScreening(const QString &reason) {
 }
 
 void MediaEngine::resumeAiScreening() {
+    if (!m_aiRunning || !m_aiPaused) return;
     m_aiPaused = false;
     emit aiResumed();
 }
@@ -595,7 +597,13 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
             QVariantMap meta = poolMap.value(path);
             if (meta.isEmpty()) meta = probeFile(path);
             QString filename = meta.value("filename").toString();
-            double dur = meta.value("duration", 10.0).toDouble();
+            if (!meta.contains("duration") || meta.value("duration").toDouble() <= 0) {
+                QMetaObject::invokeMethod(this, [this, filename]() {
+                    emit aiFailed((filename.isEmpty() ? QString("素材") : filename) + ": 无法读取时长，已停止");
+                });
+                return;
+            }
+            double dur = meta.value("duration").toDouble();
 
             double pInit = std::max(1.0, (static_cast<double>(idx) / total) * 100.0);
             QMetaObject::invokeMethod(this, [this, pInit, idx, total, filename]() {
@@ -661,6 +669,8 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
                 clip["is_10bit"] = meta.value("is_10bit", false);
                 clip["thumb"] = meta.value("thumb", "");
                 clip["transpose"] = meta.value("transpose", 0);
+                clip["media_dur"] = dur;
+                clip["has_audio"] = meta.value("has_audio").toBool();
                 currentFileTasks.append(clip);
             }
 
@@ -895,6 +905,7 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
                 if (m_exportCancelled) { proc.kill(); proc.waitForFinished(); QDir(scratch).removeRecursively(); return; }
                 if (proc.state() == QProcess::NotRunning) break;
             }
+            if (m_exportCancelled) { QDir(scratch).removeRecursively(); return; }
             if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0 || !QFile::exists(sPath) || QFileInfo(sPath).size() == 0) {
                 QString error = QString::fromUtf8(proc.readAllStandardError()).right(1200);
                 QDir(scratch).removeRecursively();
@@ -938,6 +949,7 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             if (m_exportCancelled) { concatProc.kill(); concatProc.waitForFinished(); QFile::remove(out); QDir(scratch).removeRecursively(); return; }
             if (concatProc.state() == QProcess::NotRunning) break;
         }
+        if (m_exportCancelled) { QFile::remove(out); QDir(scratch).removeRecursively(); return; }
         bool concatOk = concatProc.exitStatus() == QProcess::NormalExit && concatProc.exitCode() == 0;
 
         QDir(scratch).removeRecursively();
@@ -954,15 +966,6 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             });
         }
     });
-}
-
-void MediaEngine::startExport(const QString &outputPath, const QString &format, int width, int height, int fps) {
-    Q_UNUSED(format);
-    Q_UNUSED(width);
-    Q_UNUSED(height);
-    Q_UNUSED(fps);
-    QVariantList dummy;
-    startExport(dummy, "horizontal", "10bit");
 }
 
 void MediaEngine::exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath) {
@@ -1270,7 +1273,10 @@ QString MediaEngine::builtinBeatTrack() {
 QVariantList MediaEngine::snapToMusic(const QVariantList &clips, const QString &musicPath) {
     QString path = musicPath;
     if (path.startsWith("file://")) path = QUrl(path).toLocalFile();
-    if (path.isEmpty()) path = builtinBeatTrack();
+    if (path.isEmpty() || !QFileInfo::exists(path)) {
+        emit statusMessage("没有可用的音乐文件，时间线未改");
+        return clips;
+    }
     const QList<double> beats = beatTimesFrom(path);
     if (beats.isEmpty()) {
         emit statusMessage("没有从音乐里找到重音，时间线未改");
@@ -1395,11 +1401,16 @@ void MediaEngine::exportJianying(const QVariantList &clips, const QString &maste
     for (int i = 0; i < clips.size(); ++i) {
         const QVariantMap clip = clips[i].toMap();
         const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        const qint64 sourceStart = qint64(clip.value("start").toDouble() * 1000000);
-        const qint64 duration = qint64(std::max(0.1, clip.value("dur").toDouble()) * 1000000);
+        const qint64 sourceStart = qint64(std::max(0.0, clip.value("start").toDouble()) * 1000000);
+        const qint64 duration = qint64(clip.value("dur").toDouble() * 1000000);
+        if (duration <= 0) continue;
+        const qint64 fullDuration = clip.contains("media_dur")
+            ? qint64(clip.value("media_dur").toDouble() * 1000000)
+            : sourceStart + duration;
         videos.append(QJsonObject{{"id", id}, {"path", clip.value("src").toString()}, {"material_name", clip.value("filename").toString()},
-            {"duration", duration}, {"width", width}, {"height", height}, {"type", "video"}});
-        segments.append(QJsonObject{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"material_id", id}, {"speed", 1.0}, {"volume", 1.0},
+            {"duration", fullDuration}, {"has_audio", clip.value("has_audio").toBool()}, {"width", width}, {"height", height}, {"type", "video"}});
+        segments.append(QJsonObject{{"id", QUuid::createUuid().toString(QUuid::WithoutBraces)}, {"material_id", id},
+            {"extra_material_refs", QJsonArray()}, {"speed", 1.0}, {"volume", 1.0}, {"visible", true},
             {"source_timerange", QJsonObject{{"start", sourceStart}, {"duration", duration}}},
             {"target_timerange", QJsonObject{{"start", cursor}, {"duration", duration}}}});
         cursor += duration;

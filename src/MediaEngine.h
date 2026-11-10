@@ -32,7 +32,6 @@ public slots:
     void resumeAiScreening();
     void cancelCurrentJob();
     void safeEjectDevice();
-    void startExport(const QString &outputPath, const QString &format, int width, int height, int fps);
     void startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor);
     void generateSrt(const QVariantList &clips, const QString &outputPath);
     void exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath);
