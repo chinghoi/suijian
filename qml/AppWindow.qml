@@ -40,7 +40,105 @@ ApplicationWindow {
     property int importTotal: 0
     property string importFilename: ""
 
+    property bool projectReady: false
+    property bool restoringProject: false
+    property bool allowClose: false
+    property int clipIdCounter: 0
+    function nextClipId() { return Date.now().toString() + "_" + (++root.clipIdCounter).toString() }
+    property var playingClip: null
     property var timelineClips: []
+    onTimelineClipsChanged: if (projectReady) { timelineSync.restart(); recoveryTimer.restart() }
+    onBeatMusicChanged: if (projectReady) recoveryTimer.restart()
+    onCanvasChoiceChanged: if (projectReady) recoveryTimer.restart()
+    onTargetColorChanged: if (projectReady) recoveryTimer.restart()
+    onMediaPoolChanged: if (projectReady) recoveryTimer.restart()
+    function projectState() {
+        return {clips: timelineClips, mediaPool: mediaPool, dates: datesList,
+                selectedPaths: selectedPathsMap, canvas: canvasChoice, color: targetColor,
+                active: activeClipIndex, beatMusic: beatMusic, lut: exportLutPath}
+    }
+    property string exportLutPath: ""
+    function restoreProject(project) {
+        if (!project || !project.clips) return
+        restoringProject = true
+        player.stop()
+        root.mediaPool = project.mediaPool || []
+        root.datesList = project.dates || ["全部"]
+        root.selectedPathsMap = project.selectedPaths || ({})
+        root.canvasChoice = project.canvas || "auto"
+        root.targetColor = project.color || "8bit"
+        root.exportLutPath = project.lut || ""
+        bridge.setExportLut(root.exportLutPath)
+        root.beatMusic = project.beatMusic || ""
+        bridge.setBeatMusic(root.beatMusic)
+        root.missingPathsMap = project.missing_paths || ({})
+        var restoredClips = []
+        for (var i = 0; i < project.clips.length; i++) {
+            var clip = Object.assign({}, project.clips[i])
+            if (!clip.clip_id) clip.clip_id = root.nextClipId()
+            restoredClips.push(clip)
+        }
+        root.timelineClips = restoredClips
+        root.activeClipIndex = Math.max(0, Math.min(project.active || 0, project.clips.length - 1))
+        root.playingClip = root.timelineClips[root.activeClipIndex] || null
+        root.undoStack = []; root.redoStack = []
+        root.recalcSelectionStats()
+        restoringProject = false
+        timelineSync.restart()
+    }
+    Timer {
+        id: recoveryTimer; interval: 1200
+        onTriggered: if (!root.restoringProject) bridge.saveProject(root.projectState(), "")
+    }
+    function synchronizeTimeline() {
+        if (root.restoringProject) return
+        if (!root.timelineClips.length) {
+            player.stop(); player.source = ""; root.monitorMode = "idle"
+            root.activeClipIndex = -1; root.playingClip = null; root.currentSubtitleText = ""
+            return
+        }
+        var selected = Math.max(0, Math.min(root.activeClipIndex, root.timelineClips.length - 1))
+        for (var i = 0; root.playingClip && i < root.timelineClips.length; ++i) {
+            var c = root.timelineClips[i]
+            if ((root.playingClip.clip_id && c.clip_id === root.playingClip.clip_id) ||
+                    (!root.playingClip.clip_id && c.src === root.playingClip.src && c.start === root.playingClip.start && c.end === root.playingClip.end)) { selected = i; break }
+        }
+        root.loadActiveClip(selected, false)
+    }
+    Timer { id: timelineSync; interval: 0; onTriggered: root.synchronizeTimeline() }
+    onClosing: function(close) {
+        if (root.allowClose) return
+        if (!bridge.saveProject(root.projectState(), "")) {
+            close.accepted = false
+            closeFailureDialog.open()
+        } else bridge.cancelCurrentJob()
+    }
+    Dialog {
+        id: closeFailureDialog; anchors.centerIn: parent; modal: true
+        title: "工程保存失败，是否仍要退出？"
+        standardButtons: Dialog.Discard | Dialog.Cancel
+        onDiscarded: { root.allowClose = true; bridge.cancelCurrentJob(); root.close() }
+    }
+    FileDialog {
+        id: projectSaveDialog; title: "保存随剪工程"; fileMode: FileDialog.SaveFile
+        nameFilters: ["随剪工程 (*.suijian)"]; defaultSuffix: "suijian"
+        onAccepted: if (bridge.saveProject(root.projectState(), selectedFile.toString())) statusBanner.show("工程已保存")
+    }
+    FileDialog {
+        id: projectOpenDialog; title: "打开随剪工程"; nameFilters: ["随剪工程 (*.suijian)"]
+        onAccepted: { if (bridge.busy) return; var project = bridge.loadProject(selectedFile.toString()); if (!project.clips) return; if (!bridge.saveProject(root.projectState(), "")) return; root.restoreProject(project) }
+    }
+    Dialog {
+        id: toolModal; anchors.centerIn: parent; modal: true; closePolicy: Popup.NoAutoClose
+        title: "正在处理…"
+        ColumnLayout {
+            BusyIndicator { running: true; Layout.alignment: Qt.AlignHCenter }
+            Button { text: "取消"; onClicked: bridge.cancelTools() }
+        }
+    }
+    Shortcut { sequence: StandardKey.Save; enabled: !bridge.busy; onActivated: projectSaveDialog.open() }
+    Shortcut { sequence: StandardKey.Open; enabled: !bridge.busy; onActivated: projectOpenDialog.open() }
+
     property int activeClipIndex: -1
     property bool isContinuousPlay: true
     property bool isTheaterMode: false
@@ -359,6 +457,7 @@ ApplicationWindow {
         for (var i = 0; i < selected.length; i++) {
             var m = selected[i]
             newClips.push({
+                "clip_id": root.nextClipId(),
                 "src": m.path,
                 "filename": m.filename,
                 "start": 0.0,
@@ -391,6 +490,7 @@ ApplicationWindow {
         root.monitorMode = "timeline"
         root.previewItem = null
         var clip = timelineClips[index]
+        root.playingClip = clip
         player.stop()
         player.source = "file://" + clip.src
         player.position = Math.floor(clip.start * 1000)
@@ -427,7 +527,8 @@ ApplicationWindow {
         pushUndoState("添加单个素材至时间线")
         var newClips = root.timelineClips.slice()
         newClips.push({
-            "src": m.path,
+            "clip_id": root.nextClipId(),
+                "src": m.path,
             "filename": m.filename,
             "start": 0.0,
             "end": m.duration,
@@ -451,18 +552,12 @@ ApplicationWindow {
     }
 
     function snapTimeline(path) {
-        var before = JSON.stringify(root.timelineClips)
-        var musicBefore = root.beatMusic
-        var next = bridge.snapToMusic(root.timelineClips, path)
-        if (JSON.stringify(next) === before && bridge.beatMusic === musicBefore) return
-        root.pushUndoState("按音乐重音调整剪切点")
-        root.timelineClips = next
-        root.beatMusic = bridge.beatMusic
+        toolModal.open()
+        bridge.snapToMusicAsync(root.timelineClips, path)
     }
-
     function openSocialCopy(platform) {
-        socialBody.text = bridge.socialCopy(root.timelineClips, platform)
-        socialDialog.open()
+        toolModal.open()
+        bridge.socialCopyAsync(root.timelineClips, platform)
     }
 
     function stepActiveIn(delta) {
@@ -512,6 +607,7 @@ ApplicationWindow {
             dur_str: (curPos - clip.start).toFixed(1) + "s"
         })
         var c2 = Object.assign({}, clip, {
+            clip_id: root.nextClipId(),
             start: Number(curPos.toFixed(2)),
             dur: Number((clip.end - curPos).toFixed(2)),
             dur_str: (clip.end - curPos).toFixed(1) + "s"
@@ -526,8 +622,10 @@ ApplicationWindow {
         if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
         pushUndoState("复制镜头")
         var clip = Object.assign({}, timelineClips[activeClipIndex])
+        clip.clip_id = root.nextClipId()
         var list = timelineClips.slice()
         list.splice(activeClipIndex + 1, 0, clip)
+        root.playingClip = clip
         timelineClips = list
         activeClipIndex = activeClipIndex + 1
         statusBanner.show("已复制当前片段并插入后方")
@@ -627,6 +725,32 @@ ApplicationWindow {
     Connections {
         target: bridge
 
+        function onAiCancelled() {
+            root.followAi = false
+            aiModal.isRunning = false
+            aiModal.isStopping = false
+            aiModal.isPaused = false
+            aiModal.isPausing = false
+            aiModal.progress = 0
+            aiModal.statusText = "初筛已停止，检查点已保留"
+        }
+        function onExportCancelled() {
+            root.followExport = false
+            exportModal.isRunning = false
+            exportModal.isStopping = false
+            exportModal.progress = 0
+            exportModal.statusText = "导出已停止"
+        }
+        function onToolsFinished() { toolModal.close() }
+        function onMusicSnapped(clips) {
+            if (JSON.stringify(clips) !== JSON.stringify(root.timelineClips) || root.beatMusic !== bridge.beatMusic()) {
+                root.pushUndoState("按音乐调整剪切点")
+                root.timelineClips = clips
+                root.beatMusic = bridge.beatMusic()
+            }
+        }
+        function onSocialCopyReady(text) { socialBody.text = text; socialDialog.open() }
+
         function onImportProgress(current, total, filename) {
             root.isImporting = true
             root.importCurrent = current
@@ -695,13 +819,14 @@ ApplicationWindow {
         }
 
         function onAiProgress(percent, stepText) {
-            if (!root.followAi) return
+            if (!root.followAi || aiModal.isStopping) return
             aiModal.isRunning = true
             aiModal.progress = percent
             if (!aiModal.isPausing) aiModal.statusText = stepText
         }
 
         function onAiFailed(message) {
+            aiModal.isStopping = false;
             if (!root.followAi) return
             root.followAi = false
             aiModal.isRunning = false
@@ -713,6 +838,7 @@ ApplicationWindow {
         }
 
         function onAiFinished(tasks) {
+            aiModal.isStopping = false;
             if (!root.followAi) return
             root.followAi = false
             aiModal.isRunning = false
@@ -731,7 +857,7 @@ ApplicationWindow {
         }
 
         function onAiPaused(completed, total, reason) {
-            if (!root.followAi) return
+            if (!root.followAi || aiModal.isStopping) return
             aiModal.isRunning = true
             aiModal.isPausing = false
             aiModal.isPaused = true
@@ -740,7 +866,7 @@ ApplicationWindow {
         }
 
         function onAiResumed() {
-            if (!root.followAi) return
+            if (!root.followAi || aiModal.isStopping) return
             aiModal.isRunning = true
             aiModal.isPaused = false
             aiModal.isPausing = false
@@ -772,13 +898,14 @@ ApplicationWindow {
         }
 
         function onExportProgress(percent, stepText) {
-            if (!root.followExport) return
+            if (!root.followExport || exportModal.isStopping) return
             exportModal.isRunning = true
             exportModal.progress = percent
             exportModal.statusText = stepText
         }
 
         function onExportFinished(outPath) {
+            exportModal.isStopping = false;
             if (!root.followExport) return
             root.followExport = false
             exportModal.isRunning = false
@@ -788,6 +915,7 @@ ApplicationWindow {
         }
 
         function onExportFailed(err) {
+            exportModal.isStopping = false;
             if (!root.followExport) return
             root.followExport = false
             exportModal.isRunning = false
@@ -796,15 +924,58 @@ ApplicationWindow {
             statusBanner.show("导出失败: " + err)
         }
 
+        function onTranscriptionProgress(percent, stepText) {
+            transcriptionModal.progress = percent
+            transcriptionModal.statusText = stepText
+        }
+
+        function onTranscriptionFinished(segmentCount, warning) {
+            transcriptionModal.isRunning = false
+            transcriptionModal.progress = 100
+            transcriptionModal.statusText = warning.length > 0
+                    ? ("完成：" + segmentCount + " 段字幕。" + warning)
+                    : ("转写完成，共生成 " + segmentCount + " 段字幕")
+            statusBanner.show(transcriptionModal.statusText)
+        }
+
+        function onTranscriptionFailed(message) {
+            transcriptionModal.isRunning = false
+            transcriptionModal.progress = 0
+            transcriptionModal.statusText = message
+            statusBanner.show("语音转写失败：" + message)
+        }
+
+        function onTranscriptionCancelled() {
+            transcriptionModal.isRunning = false
+            transcriptionModal.statusText = "转写已取消"
+            statusBanner.show("语音转写已取消")
+        }
+
         function onSpeechSegmentsReady(videoPath, segments) {
             var annots = root.speechAnnotations
             annots[videoPath] = segments
             root.speechAnnotations = annots
-            statusBanner.show("口播识别完成: " + segments.length + " 个词段 (" + videoPath.split("/").pop() + ")")
+            var updatedClips = root.timelineClips.slice()
+            for (var i = 0; i < updatedClips.length; i++) {
+                var clip = updatedClips[i]
+                if (clip.src !== videoPath) continue
+                var clipSubs = []
+                for (var j = 0; j < segments.length; j++) {
+                    if (segments[j].end > clip.start && segments[j].start < clip.end)
+                        clipSubs.push(segments[j])
+                }
+                var updatedClip = Object.assign({}, clip)
+                updatedClip.subtitles = clipSubs
+                updatedClips[i] = updatedClip
+            }
+            root.timelineClips = updatedClips
+            statusBanner.show("口播识别完成: " + segments.length + " 段字幕 (" + videoPath.split("/").pop() + ")")
         }
     }
 
     Component.onCompleted: {
+        restoreProject(bridge.loadProject(""))
+        root.projectReady = true
         bridge.loadRecentDirs()
         bridge.detectDji()
     }
@@ -819,11 +990,11 @@ ApplicationWindow {
     }
     Shortcut { sequence: "Left"; onActivated: player.position = Math.max(0, player.position - 1000) }
     Shortcut { sequence: "Right"; onActivated: player.position = player.position + 1000 }
-    Shortcut { sequence: "B"; onActivated: root.splitCurrentClip() }
-    Shortcut { sequence: "Delete"; onActivated: root.deleteCurrentClip() }
-    Shortcut { sequence: "Ctrl+Z"; onActivated: root.undo() }
-    Shortcut { sequence: "Ctrl+Shift+Z"; onActivated: root.redo() }
-    Shortcut { sequence: "Ctrl+Y"; onActivated: root.redo() }
+    Shortcut { sequence: "B"; enabled: !bridge.busy; onActivated: root.splitCurrentClip() }
+    Shortcut { sequence: "Delete"; enabled: !bridge.busy; onActivated: root.deleteCurrentClip() }
+    Shortcut { sequence: "Ctrl+Z"; enabled: !bridge.busy; onActivated: root.undo() }
+    Shortcut { sequence: "Ctrl+Shift+Z"; enabled: !bridge.busy; onActivated: root.redo() }
+    Shortcut { sequence: "Ctrl+Y"; enabled: !bridge.busy; onActivated: root.redo() }
 
     // ==========================================
     // 全局拖拽支持 (支持直接从 Finder / 资源管理器拖入)
@@ -1465,6 +1636,8 @@ ApplicationWindow {
                                     id: mobileImportMenu
                                     MenuItem { text: "导入视频文件夹..."; onTriggered: folderDialog.open() }
                                     MenuItem { text: "选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
+                                    MenuItem { text: "保存工程…"; enabled: !bridge.busy; onTriggered: projectSaveDialog.open() }
+                                    MenuItem { text: "打开工程…"; enabled: !bridge.busy; onTriggered: projectOpenDialog.open() }
                                     MenuItem { text: "重新检测相机卡"; onTriggered: bridge.detectDji() }
                                 }
                             }
@@ -1645,7 +1818,7 @@ ApplicationWindow {
                                         Rectangle {
                                             color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
                                             Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
-                                            Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit D-Log" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                            Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                                         }
                                     }
                                 }
@@ -1761,7 +1934,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true; spacing: 6
                                     Button {
                                         text: aiModal.isPaused ? "继续初筛" : (aiModal.isPausing ? "正在暂停…" : "暂停")
-                                        enabled: !aiModal.isPausing
+                                        enabled: !aiModal.isPausing && !aiModal.isStopping
                                         onClicked: {
                                             if (aiModal.isPaused) bridge.resumeAiScreening()
                                             else if (!aiModal.isPausing) {
@@ -1784,12 +1957,8 @@ ApplicationWindow {
                                     Button {
                                         text: "中止初筛"
                                         onClicked: {
-                                            root.followAi = false
-                                            bridge.cancelCurrentJob()
-                                            aiModal.isRunning = false
-                                            aiModal.progress = 0
-                                            aiModal.isPaused = false
-                                            aiModal.isPausing = false
+                                            aiModal.isStopping = true
+                                            bridge.cancelAi()
                                         }
                                         background: Rectangle { color: "#7f1d1d"; radius: 4 }
                                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -1811,7 +1980,7 @@ ApplicationWindow {
                             opacity: enabled ? 1.0 : 0.45
                             model: [
                                 "综合筛选（声音片段 + 画面合格片段）",
-                                "口播停顿切分（保留呼吸间隔，不生成字幕）",
+                                "口播转写粗剪（生成字幕，去除相邻重复句）",
                                 "画面筛选（曝光、细节、画面变化）",
                                 "声音活动切分（按音量检测静音）"
                             ]
@@ -1876,13 +2045,14 @@ ApplicationWindow {
                             Layout.topMargin: 4
                             text: {
                                 if (aiModal.isRunning) {
+                                if (aiModal.isStopping) return "正在停止初筛…"
                                     if (aiModal.isPaused) return "初筛已暂停 (点击上方继续)"
                                     if (aiModal.isPausing) return "正在暂停，等待停止读取…"
                                     return "AI 初筛全速进行中..."
                                 }
                                 return "开始 AI 智能初筛 (" + (root.selectedCount > 0 ? ("已选 " + root.selectedCount + " 个") : ("全部 " + root.mediaPool.length + " 个素材")) + ")"
                             }
-                            enabled: root.mediaPool.length > 0 && !aiModal.isRunning
+                            enabled: root.mediaPool.length > 0 && !aiModal.isRunning && !bridge.busy
                             opacity: enabled ? 1.0 : 0.45
                             onClicked: {
                                 var mode = "3"
@@ -1903,6 +2073,7 @@ ApplicationWindow {
                                 root.masterCanvas = canvasMode
 
                                 root.followAi = true
+                        aiModal.isStopping = false
                                 aiModal.isRunning = true
                                 aiModal.progress = 1
                                 aiModal.isPaused = false
@@ -2043,6 +2214,8 @@ ApplicationWindow {
                                     id: desktopImportMenu
                                     MenuItem { text: "导入视频文件夹..."; onTriggered: folderDialog.open() }
                                     MenuItem { text: "选取视频文件 (可多选)..."; onTriggered: fileDialog.open() }
+                                    MenuItem { text: "保存工程…"; enabled: !bridge.busy; onTriggered: projectSaveDialog.open() }
+                                    MenuItem { text: "打开工程…"; enabled: !bridge.busy; onTriggered: projectOpenDialog.open() }
                                     MenuItem { text: "重新检测相机卡"; onTriggered: bridge.detectDji() }
                                 }
                             }
@@ -2419,7 +2592,7 @@ ApplicationWindow {
                                             Rectangle {
                                                 color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
                                                 Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
-                                                Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit D-Log" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                                Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
                                             }
                                         }
                                     }
@@ -2818,7 +2991,7 @@ ApplicationWindow {
                             Text {
                                 id: colorTagText
                                 anchors.centerIn: parent
-                                text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.is_10bit ? "10-Bit HDR" : "8-Bit SDR"
+                                text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.is_10bit ? "10-Bit" : "8-Bit"
                                 color: "#ffffff"; font.pixelSize: 10; font.bold: true
                             }
                         }
@@ -3095,15 +3268,16 @@ ApplicationWindow {
         anchors.bottom: parent.bottom
         anchors.bottomMargin: root.isMobileMode ? 64 : 190
         anchors.horizontalCenter: parent.horizontalCenter
-        width: Math.max(260, bannerText.implicitWidth + 36)
-        height: 36; radius: 18
+        width: Math.min(root.width - 32, Math.max(260, bannerMetrics.advanceWidth(bannerText.text) + 36))
+        height: Math.max(36, bannerText.contentHeight + 20); radius: 18
         color: "#f80f172a"; border.color: "#38bdf8"; border.width: 1
         opacity: 0; visible: opacity > 0
 
-        Text { id: bannerText; anchors.centerIn: parent; color: "#ffffff"; font.bold: true; font.pixelSize: 12 }
+        FontMetrics { id: bannerMetrics; font: bannerText.font }
+        Text { id: bannerText; anchors.centerIn: parent; width: parent.width - 36; wrapMode: Text.WordWrap; maximumLineCount: 5; elide: Text.ElideRight; color: "#ffffff"; font.bold: true; font.pixelSize: 12 }
         Timer { id: bannerTimer; interval: 3500; onTriggered: bannerFadeOut.start() }
         NumberAnimation { id: bannerFadeOut; target: statusBanner; property: "opacity"; to: 0; duration: 400 }
-        function show(msg) { bannerText.text = msg; statusBanner.opacity = 1; bannerTimer.restart() }
+        function show(msg) { bannerText.text = msg; statusBanner.opacity = 1; bannerTimer.interval = Math.min(10000, Math.max(3500, msg.length * 90)); bannerTimer.restart() }
     }
 
     // AI 筛选模态弹窗
@@ -3153,12 +3327,8 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (aiModal.isRunning) {
-                                root.followAi = false
-                                bridge.cancelCurrentJob()
-                                aiModal.isRunning = false
-                                aiModal.progress = 0
-                                aiModal.isPaused = false
-                                aiModal.isPausing = false
+                                aiModal.isStopping = true
+                                bridge.cancelAi()
                             }
                             aiModal.close()
                         }
@@ -3172,6 +3342,7 @@ ApplicationWindow {
         property real progress: 0.0
         property string statusText: "准备就绪"
         property bool isRunning: false
+        property bool isStopping: false
         property bool isPaused: false
         property bool isPausing: false
 
@@ -3196,7 +3367,7 @@ ApplicationWindow {
                 opacity: enabled ? 1.0 : 0.45
                 model: [
                     "综合筛选（声音片段 + 画面合格片段）",
-                    "口播停顿切分（保留呼吸间隔，不生成字幕）",
+                    "口播转写粗剪（生成字幕，去除相邻重复句）",
                     "画面筛选（曝光、细节、画面变化）",
                     "声音活动切分（按音量检测静音）"
                 ]
@@ -3373,7 +3544,7 @@ ApplicationWindow {
                         Text { text: "预计成片时长："; color: "#94a3b8"; font.pixelSize: 11 }
                         Text {
                             property real effSec: root.getEffectiveTotalSeconds()
-                            property real calcDur: Math.max(5.0, effSec * retentionSlider.value / 100.0)
+                            property real calcDur: Math.min(effSec, Math.max(10.0, effSec * retentionSlider.value / 100.0))
                             text: (effSec <= 0)
                                   ? "请先选择或导入视频素材"
                                   : ((retentionSlider.value >= 100)
@@ -3406,15 +3577,17 @@ ApplicationWindow {
 
                         // 状态徽章 (运行中 / 暂停 / 待机就绪)
                         Rectangle {
-                            height: 20
-                            width: statusBadgeText.implicitWidth + 18
-                            radius: 10
+                            height: 22
+                            width: statusBadgeText.implicitWidth + 36
+                            radius: 11
                             color: !aiModal.isRunning ? "#1e293b" : ((aiModal.isPaused || aiModal.isPausing) ? "#78350f" : "#064e3b")
                             border.color: !aiModal.isRunning ? "#475569" : ((aiModal.isPaused || aiModal.isPausing) ? "#f59e0b" : "#10b981")
 
                             RowLayout {
-                                anchors.centerIn: parent
-                                spacing: 4
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                spacing: 6
                                 Rectangle {
                                     width: 6
                                     height: 6
@@ -3489,12 +3662,8 @@ ApplicationWindow {
                 Button {
                     text: aiModal.isRunning ? "中止初筛" : "取消"
                     onClicked: {
-                        root.followAi = false
-                        bridge.cancelCurrentJob()
-                        aiModal.isRunning = false
-                        aiModal.progress = 0
-                        aiModal.isPaused = false
-                        aiModal.isPausing = false
+                        aiModal.isStopping = true
+                        bridge.cancelAi()
                         aiModal.close()
                     }
                     background: Rectangle {
@@ -3514,7 +3683,7 @@ ApplicationWindow {
 
                 Button {
                     text: aiModal.isPaused ? "继续初筛" : (aiModal.isPausing ? "正在暂停…" : "暂停")
-                    enabled: aiModal.isRunning && !aiModal.isPausing
+                    enabled: aiModal.isRunning && !aiModal.isPausing && !aiModal.isStopping
                     opacity: enabled ? 1.0 : 0.4
                     onClicked: {
                         if (aiModal.isPaused) bridge.resumeAiScreening()
@@ -3564,13 +3733,14 @@ ApplicationWindow {
                     id: aiStartBtn
                     text: {
                         if (aiModal.isRunning) {
+                                if (aiModal.isStopping) return "正在停止初筛…"
                             if (aiModal.isPaused) return "初筛已暂停 (请点击左侧「继续初筛」)"
                             if (aiModal.isPausing) return "正在暂停，等待停止读取…"
                             return "初筛全速进行中..."
                         }
                         return "开始 / 续接初筛"
                     }
-                    enabled: !aiModal.isRunning && root.mediaPool.length > 0
+                    enabled: !aiModal.isRunning && !bridge.busy && root.mediaPool.length > 0
                     opacity: enabled ? 1.0 : 0.45
                     onClicked: {
                         var mode = "3"
@@ -3604,6 +3774,7 @@ ApplicationWindow {
                         root.masterCanvas = canvasMode
 
                         root.followAi = true
+                        aiModal.isStopping = false
                         aiModal.isRunning = true
                         aiModal.progress = 1.0
                         aiModal.isPaused = false
@@ -3825,10 +3996,8 @@ ApplicationWindow {
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
                             if (exportModal.isRunning) {
-                                root.followExport = false
-                                bridge.cancelCurrentJob()
-                                exportModal.isRunning = false
-                                exportModal.progress = 0
+                                exportModal.isStopping = true
+                                bridge.cancelExport()
                             }
                             exportModal.close()
                         }
@@ -3840,6 +4009,7 @@ ApplicationWindow {
         property real progress: 0.0
         property string statusText: "准备就绪"
         property bool isRunning: false
+        property bool isStopping: false
 
         onAboutToShow: {
             if (!exportModal.isRunning) {
@@ -3912,7 +4082,9 @@ ApplicationWindow {
 
             // 专业工程与元数据导出栏
             Text {
-                text: "专业工程与元数据清单导出 (免重新渲染，一键快速生成)："
+                text: "工程导出保留出入点、旋转和音乐。字幕附 SRT；LUT 和毛玻璃背景需在目标软件重建。另附完整随剪工程。"
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
                 color: exportModal.isRunning ? "#64748b" : "#cbd5e1"
                 font.pixelSize: 11
                 font.bold: true
@@ -3930,7 +4102,7 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.preferredHeight: 32
                     onClicked: {
                         var expCanvas = exportCanvasCombo.currentIndex === 0 ? root.getAutoMasterCanvas() : (exportCanvasCombo.currentIndex === 1 ? "horizontal" : "vertical")
-                        bridge.exportFcpxml(root.timelineClips, expCanvas, "")
+                        toolModal.open(); bridge.exportFcpxmlAsync(root.timelineClips, expCanvas, "")
                     }
                     background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#6366f1" }
                     contentItem: Text { text: parent.text; color: "#a5b4fc"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -3983,7 +4155,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     onClicked: {
                         var expCanvas = exportCanvasCombo.currentIndex === 0 ? root.getAutoMasterCanvas() : (exportCanvasCombo.currentIndex === 1 ? "horizontal" : "vertical")
-                        bridge.exportJianying(root.timelineClips, expCanvas, "")
+                        toolModal.open(); bridge.exportJianyingAsync(root.timelineClips, expCanvas, "")
                     }
                     background: Rectangle { color: "#1e293b"; radius: 4 }
                     contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -4009,15 +4181,17 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         Rectangle {
-                            height: 18
-                            width: expBadgeText.implicitWidth + 16
-                            radius: 9
+                            height: 22
+                            width: expBadgeText.implicitWidth + 36
+                            radius: 11
                             color: exportModal.isRunning ? "#064e3b" : "#1e293b"
                             border.color: exportModal.isRunning ? "#10b981" : "#475569"
 
                             RowLayout {
-                                anchors.centerIn: parent
-                                spacing: 4
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                spacing: 6
                                 Rectangle {
                                     width: 6; height: 6; radius: 3
                                     color: exportModal.isRunning ? "#34d399" : "#94a3b8"
@@ -4078,10 +4252,8 @@ ApplicationWindow {
                 Button {
                     text: exportModal.isRunning ? "中止导出" : "取消"
                     onClicked: {
-                        root.followExport = false
-                        bridge.cancelCurrentJob()
-                        exportModal.isRunning = false
-                        exportModal.progress = 0
+                        exportModal.isStopping = true
+                        bridge.cancelExport()
                         exportModal.close()
                     }
                     background: Rectangle {
@@ -4099,8 +4271,8 @@ ApplicationWindow {
                 }
                 Item { Layout.fillWidth: true }
                 Button {
-                    text: exportModal.isRunning ? "硬件加速渲染压制中..." : "开始硬件加速渲染成片 (MP4)"
-                    enabled: !exportModal.isRunning && root.timelineClips.length > 0
+                    text: exportModal.isStopping ? "正在停止导出…" : exportModal.isRunning ? "硬件加速渲染压制中..." : "开始硬件加速渲染成片 (MP4)"
+                    enabled: !exportModal.isRunning && !bridge.busy && root.timelineClips.length > 0
                     opacity: enabled ? 1.0 : 0.45
                     onClicked: {
                         var expCanvas = "horizontal"
@@ -4113,6 +4285,7 @@ ApplicationWindow {
                         }
                         root.masterCanvas = expCanvas
                         root.followExport = true
+                        exportModal.isStopping = false
                         exportModal.isRunning = true
                         exportModal.progress = 1
                         exportModal.statusText = "正在启动硬件加速导出管道..."
@@ -4151,7 +4324,7 @@ ApplicationWindow {
         title: "选择 .cube 3D LUT"
         fileMode: FileDialog.OpenFile
         nameFilters: ["3D LUT (*.cube)", "所有文件 (*)"]
-        onAccepted: bridge.setExportLut(selectedFile.toString())
+        onAccepted: { root.exportLutPath = selectedFile.toString(); bridge.setExportLut(root.exportLutPath); recoveryTimer.restart() }
     }
     FileDialog {
         id: musicDialog
@@ -4165,7 +4338,7 @@ ApplicationWindow {
         id: timelineTools
         anchors.centerIn: parent
         width: Math.min(480, root.width - 24)
-        height: Math.min(360, root.height - 24)
+        height: Math.min(460, root.height - 24)
         modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
         header: Rectangle {
@@ -4173,9 +4346,14 @@ ApplicationWindow {
             Text { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "时间线粗剪"; color: "#f1f5f9"; font.bold: true; font.pixelSize: 13 }
         }
         ColumnLayout {
+            enabled: !bridge.busy
             anchors.fill: parent
             anchors.margins: 16
             spacing: 8
+            RowLayout {
+                Button { text: "保存工程…"; onClicked: projectSaveDialog.open() }
+                Button { text: "打开工程…"; onClicked: projectOpenDialog.open() }
+            }
             TextField {
                 id: roughCutQuery
                 Layout.fillWidth: true
@@ -4205,12 +4383,89 @@ ApplicationWindow {
                 Button { text: "朋友圈文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("wechat"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
                 Button { text: "小红书文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("xhs"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
             }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Button {
+                    text: "语音转写"
+                    Layout.preferredWidth: 104
+                    enabled: root.timelineClips.length > 0 && !transcriptionModal.isRunning
+                    onClicked: {
+                        transcriptionModal.progress = 0
+                        transcriptionModal.statusText = "正在准备语音识别模型…"
+                        transcriptionModal.isRunning = true
+                        transcriptionModal.open()
+                        bridge.transcribeTimeline(root.timelineClips)
+                    }
+                    background: Rectangle { color: parent.enabled ? "#075985" : "#222533"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e0f2fe" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "首次使用会下载约 75 MB 模型；语音在本机识别，不上传视频。"
+                    color: "#94a3b8"
+                    font.pixelSize: 10
+                    wrapMode: Text.WordWrap
+                }
+            }
             Text {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 color: "#94a3b8"
                 font.pixelSize: 11
                 text: root.beatMusic ? ("当前卡点音乐: " + root.beatMusic) : "还没有卡点音乐。卡点改的是成片剪切点，导出时用这首音乐替换镜头原声。"
+            }
+        }
+    }
+
+    Dialog {
+        id: transcriptionModal
+        anchors.centerIn: parent
+        width: Math.min(420, root.width - 24)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
+        header: Rectangle {
+            color: "transparent"
+            height: 36
+            Text { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "语音转写"; color: "#f1f5f9"; font.bold: true; font.pixelSize: 13 }
+        }
+        property real progress: 0
+        property string statusText: "准备就绪"
+        property bool isRunning: false
+        property bool isStopping: false
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 16
+            spacing: 12
+            Text {
+                Layout.fillWidth: true
+                text: "识别结果会用于播放字幕、SRT 导出、元数据和按词筛选。视频文件不会上传。"
+                color: "#94a3b8"
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+            ProgressBar { Layout.fillWidth: true; value: transcriptionModal.progress / 100.0 }
+            Text {
+                Layout.fillWidth: true
+                text: transcriptionModal.statusText
+                color: transcriptionModal.isRunning ? "#38bdf8" : "#cbd5e1"
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+            Button {
+                Layout.alignment: Qt.AlignRight
+                text: transcriptionModal.isRunning ? "取消转写" : "关闭"
+                onClicked: {
+                    if (transcriptionModal.isRunning) {
+                        statusText = "正在停止转写…"
+                        bridge.cancelTranscription()
+                    } else {
+                        transcriptionModal.close()
+                    }
+                }
+                background: Rectangle { color: transcriptionModal.isRunning ? "#7f1d1d" : "#334155"; radius: 4 }
+                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
             }
         }
     }

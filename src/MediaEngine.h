@@ -9,6 +9,9 @@
 #include <QProcess>
 #include <QTimer>
 #include <QSet>
+#include <QHash>
+#include <QJsonObject>
+#include <QMutex>
 #include <atomic>
 #include <functional>
 #include <thread>
@@ -16,10 +19,12 @@
 
 class MediaEngine : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
 
 public:
     explicit MediaEngine(QObject *parent = nullptr);
     virtual ~MediaEngine();
+    bool busy() const;
 
 public slots:
     void importPaths(const QStringList &paths);
@@ -31,6 +36,17 @@ public slots:
     void pauseAiScreening(const QString &reason = QString("用户主动暂停"));
     void resumeAiScreening();
     void cancelCurrentJob();
+    void cancelAi();
+    void cancelExport();
+    void cancelTools();
+    bool saveProject(const QVariantMap &project, const QString &path = QString());
+    QVariantMap loadProject(const QString &path = QString());
+    void snapToMusicAsync(const QVariantList &clips, const QString &path);
+    void exportFcpxmlAsync(const QVariantList &clips, const QString &canvas, const QString &path);
+    void exportJianyingAsync(const QVariantList &clips, const QString &canvas, const QString &path);
+    void socialCopyAsync(const QVariantList &clips, const QString &platform);
+    void transcribeTimeline(const QVariantList &clips);
+    void cancelTranscription();
     void safeEjectDevice();
     void startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor);
     void generateSrt(const QVariantList &clips, const QString &outputPath);
@@ -48,6 +64,12 @@ public slots:
     QString beatMusic() const;
 
 signals:
+    void busyChanged();
+    void aiCancelled();
+    void exportCancelled();
+    void toolsFinished();
+    void musicSnapped(const QVariantList &clips);
+    void socialCopyReady(const QString &text);
     void beatMusicChanged();
     void mediaLoaded(const QStringList &dates, const QVariantList &mediaList, const QString &sourceLabel);
     void importProgress(int current, int total, const QString &filename);
@@ -61,6 +83,10 @@ signals:
     void aiPaused(int completed, int total, const QString &reason);
     void aiResumed();
     void speechSegmentsReady(const QString &videoPath, const QVariantList &segments);
+    void transcriptionProgress(double percent, const QString &stepText);
+    void transcriptionFinished(int segmentCount, const QString &warning);
+    void transcriptionFailed(const QString &errorMessage);
+    void transcriptionCancelled();
     void deviceDisconnected(const QString &deviceName);
     void deviceReconnected(const QString &deviceName, const QVariantMap &diff);
     void usbDeviceDetected(const QString &deviceName, const QString &mediaDir, int fileCount);
@@ -71,12 +97,17 @@ signals:
 
 private:
     void checkDeviceHeartbeat();
+    bool beginTool();
+    void endTool();
+    void exportProjectExtras(const QVariantList &clips, const QString &canvas, const QString &base);
     QVariantMap probeFile(const QString &filepath);
     QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr, double duration = 0, const std::function<void(double)> &onProgress = {});
     QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error, const std::function<void(double)> &onProgress = {});
-    bool saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec);
+    bool saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec, const QJsonObject &fingerprints);
     QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode, double targetDurationSec);
     void clearAiCheckpoint();
+    QVariantList transcriptSegmentsForClip(const QVariantMap &clip) const;
+    QString transcriptTextForClip(const QVariantMap &clip) const;
 
     QString m_activeDeviceRoot;
     QStringList m_knownFiles;
@@ -84,12 +115,20 @@ private:
     bool m_isDeviceOnline = true;
     QTimer *m_heartbeatTimer = nullptr;
 
+    std::atomic<bool> m_importRunning{false};
+    std::atomic<bool> m_toolCancelled{false};
+    std::atomic<bool> m_toolRunning{false};
     std::atomic<bool> m_aiPaused{false};
     std::atomic<bool> m_aiQuiesced{false};
     std::atomic<bool> m_aiCheckpointOk{false};
     std::atomic<bool> m_aiRunning{false};
     std::atomic<bool> m_exportRunning{false};
     std::atomic<bool> m_exportCancelled{false};
+    std::atomic<bool> m_transcriptionCancelled{false};
+    std::atomic<bool> m_transcriptionRunning{false};
+    mutable QMutex m_speechMutex;
+    QHash<QString, QVariantList> m_speechAnnotations;
+    QHash<QString, QString> m_speechFingerprints;
     std::vector<std::thread> m_workers;
     std::atomic<bool> m_aiCancelled{false};
     QVariantList m_currentAiTasks;

@@ -18,10 +18,12 @@ jobs:
       - name: Install build and media dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qt6-base-dev qt6-declarative-dev qt6-multimedia-dev cmake ninja-build ffmpeg
+          sudo apt-get install -y qt6-base-dev qt6-declarative-dev qt6-multimedia-dev cmake ninja-build ffmpeg espeak-ng
+      - name: Prepare speech fixture
+        run: espeak-ng -s 130 -w /tmp/suijian-asr-test.wav "This is a clear voice recording. We are testing local speech recognition and subtitle generation."
       - name: Build native application and tests
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
           cmake --build build -j 2
       - name: Run screening regressions
-        run: ctest --test-dir build --output-on-failure
+        run: SUIJIAN_ASR_TEST_AUDIO=/tmp/suijian-asr-test.wav ctest --test-dir build --output-on-failure
