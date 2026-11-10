@@ -62,7 +62,8 @@
 
 GitHub Actions 会打出这些包，也可在 [Releases](https://github.com/chinghoi/suijian/releases) 下载：
 
-* macOS: `SuiJian-Native-macOS.dmg`（包里带有 Qt，分析和导出仍要本机 `ffmpeg` / `ffprobe`）
+* macOS Apple Silicon: `SuiJian-Native-macOS.dmg`（包里带有 Qt，分析和导出仍要本机 `ffmpeg` / `ffprobe`）
+* macOS Intel: `SuiJian-Native-macOS-Intel.dmg`（x86_64，系统要求 macOS 12 或更新；同样带有 Qt，并需要本机 FFmpeg）
 * Windows: `SuiJian-Native-Windows.zip`（解压后运行 `随剪.exe`，包里带有 Qt，同样需要本机 FFmpeg）
 * Linux: `SuiJian-Native-Linux-x64.tar.gz` 里只有可执行文件。系统里要有兼容的 Qt 6、Qt Quick 和 `ffmpeg` / `ffprobe`，否则打不开或不能处理视频。
 
