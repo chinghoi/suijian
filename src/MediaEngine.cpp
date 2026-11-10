@@ -322,7 +322,7 @@ QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &aud
     double reported = -1;
     while (!ffmpeg.waitForFinished(100)) {
         errBytes += ffmpeg.readAllStandardError();
-        if (onProgress && duration > 0 && clock.elapsed() >= 400) {
+        if (onProgress && duration > 0 && (reported < 0 || clock.elapsed() >= 400)) {
             const int mark = errBytes.lastIndexOf("time=");
             if (mark >= 0) {
                 const auto token = errBytes.mid(mark + 5).trimmed().split(' ').value(0).split(':');
@@ -358,12 +358,13 @@ QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &aud
         }
     }
 
-    double totalDur = 0.0;
-    QProcess probe;
-    probe.start("ffprobe", QStringList() << "-v" << "error" << "-show_entries" << "format=duration" << "-of" << "default=noprint_wrappers=1:nokey=1" << audioOrVideoPath);
-    if (probe.waitForFinished(3000)) {
-        totalDur = probe.readAllStandardOutput().trimmed().toDouble();
+    double totalDur = duration;
+    if (totalDur <= 0.0) {
+        QProcess probe;
+        probe.start("ffprobe", QStringList() << "-v" << "error" << "-show_entries" << "format=duration" << "-of" << "default=noprint_wrappers=1:nokey=1" << audioOrVideoPath);
+        if (probe.waitForFinished(3000)) totalDur = QString::fromUtf8(probe.readAllStandardOutput()).trimmed().toDouble();
     }
+    if (m_aiPaused || m_aiCancelled) return {};
     if (totalDur <= 0.0) { if (error) *error = "无法读取音频时长"; return {}; }
 
     double curStart = 0.0;
@@ -419,10 +420,9 @@ QList<QPair<double, double>> MediaEngine::detectVisualSegments(const QString &pa
             offset += frameBytes;
         }
         pending.remove(0, offset);
-        if (onProgress && duration > 0 && clock.elapsed() >= 400) {
+        if (onProgress && duration > 0 && (reported < 0 || clock.elapsed() >= 400)) {
             const double fraction = std::min(0.999, std::max(0.0, index * step / duration));
-            if (fraction >= reported + 0.02) { onProgress(fraction); reported = fraction; }
-            clock.restart();
+            if (fraction >= reported + 0.02) { onProgress(fraction); reported = fraction; clock.restart(); }
         }
     };
     while (process.state() != QProcess::NotRunning) {
@@ -723,6 +723,7 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
 
     if (m_exportRunning.exchange(true)) { emit exportFailed("上一个导出任务仍在停止，请稍后重试"); return; }
     QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    QDir().mkpath(down);
     QString out = down + QString("/随剪_成片_%1.mp4").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"));
 
     m_exportCancelled = false;
@@ -836,17 +837,18 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             if (clipAspect > 0 && (transpose == 1 || transpose == 2)) clipAspect = 1 / clipAspect;
             const double outputAspect = double(w) / h;
             const bool sameAspect = clipAspect > 0 && std::abs(clipAspect - outputAspect) / std::max(clipAspect, outputAspect) <= 0.02;
-            const QString pix = targetColor == "10bit" ? "yuv420p10" : "yuv420";
+            const QString overlayPix = targetColor == "10bit" ? "yuv420p10" : "yuv420";
+            const QString framePix = targetColor == "10bit" ? "yuv420p10le" : "yuv420p";
             QString prefix = transpose == 1 || transpose == 2 ? QString("transpose=%1,").arg(transpose) : QString();
             prefix += colorFilter;
             QString filter = sameAspect
-                ? QString("[0:v:0]%1scale=%2:%3:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=%2:%3:(ow-iw)/2:(oh-ih)/2,format=%4,setsar=1[outv]").arg(prefix).arg(w).arg(h).arg(pix)
+                ? QString("[0:v:0]%1scale=%2:%3,format=%4,setsar=1[outv]").arg(prefix).arg(w).arg(h).arg(framePix)
                 : QString("[0:v:0]%1split=2[fgin][bgin];"
                     "[bgin]scale=%2:%3:force_original_aspect_ratio=increase,crop=%2:%3,boxblur=8:2,"
                     "scale=%4:%5:flags=fast_bilinear,eq=brightness=-0.08:saturation=1.15[bg];"
                     "[fgin]scale=%4:%5:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];"
                     "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=%6,setsar=1[outv]")
-                    .arg(prefix).arg(bw).arg(bh).arg(w).arg(h).arg(pix);
+                    .arg(prefix).arg(bw).arg(bh).arg(w).arg(h).arg(overlayPix);
             args << "-filter_complex" << filter << "-map" << "[outv]" << "-map" << (hasAudio ? "0:a:0" : "1:a:0");
 
 #if defined(Q_OS_MAC)
