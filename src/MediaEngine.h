@@ -10,6 +10,7 @@
 #include <QTimer>
 #include <QSet>
 #include <atomic>
+#include <functional>
 #include <thread>
 #include <vector>
 
@@ -61,8 +62,8 @@ signals:
 private:
     void checkDeviceHeartbeat();
     QVariantMap probeFile(const QString &filepath);
-    QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr);
-    QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error);
+    QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr, double duration = 0, const std::function<void(double)> &onProgress = {});
+    QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error, const std::function<void(double)> &onProgress = {});
     bool saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec);
     QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode, double targetDurationSec);
     void clearAiCheckpoint();
@@ -74,6 +75,7 @@ private:
     QTimer *m_heartbeatTimer = nullptr;
 
     std::atomic<bool> m_aiPaused{false};
+    std::atomic<bool> m_aiQuiesced{false};
     std::atomic<bool> m_aiRunning{false};
     std::atomic<bool> m_exportRunning{false};
     std::atomic<bool> m_exportCancelled{false};

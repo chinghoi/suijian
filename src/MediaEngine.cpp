@@ -19,6 +19,7 @@
 #include <QSaveFile>
 #include <QCryptographicHash>
 #include <QTemporaryDir>
+#include <QElapsedTimer>
 
 MediaEngine::MediaEngine(QObject *parent) : QObject(parent) {
     m_heartbeatTimer = new QTimer(this);
@@ -227,7 +228,13 @@ void MediaEngine::importPaths(const QStringList &paths) {
         QVariantList mediaList;
         QSet<QString> dateSet;
 
+        const int totalFiles = files.size();
         for (int i = 0; i < files.size(); ++i) {
+            const QString filename = QFileInfo(files[i]).fileName();
+            const int current = i + 1;
+            QMetaObject::invokeMethod(this, [this, current, totalFiles, filename]() {
+                emit importProgress(current, totalFiles, filename);
+            });
             QVariantMap meta = probeFile(files[i]);
             if (!meta.isEmpty()) {
                 mediaList.append(meta);
@@ -294,8 +301,9 @@ void MediaEngine::checkDeviceHeartbeat() {
     }
 }
 
-QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb, double minSilenceDur, double minSpeechDur, QString *error) {
+QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb, double minSilenceDur, double minSpeechDur, QString *error, double duration, const std::function<void(double)> &onProgress) {
     QList<QPair<double, double>> voiceBlocks;
+    if (m_aiPaused || m_aiCancelled) return {};
     QProcess ffmpeg;
     QStringList args = {
         "-y", "-i", audioOrVideoPath,
@@ -305,19 +313,38 @@ QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &aud
     };
     ffmpeg.start("ffmpeg", args);
     if (!ffmpeg.waitForStarted(5000)) {
-        if (error) *error = "无法启动 FFmpeg";
+        if (error && !m_aiPaused && !m_aiCancelled) *error = "无法启动 FFmpeg";
         return {};
     }
+    QByteArray errBytes;
+    QElapsedTimer clock;
+    clock.start();
+    double reported = -1;
     while (!ffmpeg.waitForFinished(100)) {
-        if (m_aiCancelled) { ffmpeg.kill(); ffmpeg.waitForFinished(5000); return {}; }
+        errBytes += ffmpeg.readAllStandardError();
+        if (onProgress && duration > 0 && clock.elapsed() >= 400) {
+            const int mark = errBytes.lastIndexOf("time=");
+            if (mark >= 0) {
+                const auto token = errBytes.mid(mark + 5).trimmed().split(' ').value(0).split(':');
+                if (token.size() == 3) {
+                    const double seconds = token.at(0).toDouble() * 3600 + token.at(1).toDouble() * 60 + token.at(2).toDouble();
+                    const double fraction = std::min(0.999, std::max(0.0, seconds / duration));
+                    if (fraction >= reported + 0.02) { onProgress(fraction); reported = fraction; }
+                }
+            }
+            clock.restart();
+        }
+        if (m_aiCancelled || m_aiPaused) { ffmpeg.kill(); ffmpeg.waitForFinished(5000); return {}; }
         if (ffmpeg.state() == QProcess::NotRunning) break;
     }
+    errBytes += ffmpeg.readAllStandardError();
+    if (m_aiPaused || m_aiCancelled) return {};
     if (ffmpeg.exitStatus() != QProcess::NormalExit || ffmpeg.exitCode() != 0) {
-        if (error) *error = "音频分析失败: " + QString::fromUtf8(ffmpeg.readAllStandardError()).right(1000);
+        if (error) *error = "音频分析失败: " + QString::fromUtf8(errBytes).right(1000);
         return {};
     }
 
-    QString errOut = QString::fromUtf8(ffmpeg.readAllStandardError());
+    QString errOut = QString::fromUtf8(errBytes);
     QList<QPair<QString, double>> silences;
     for (const QString &line : errOut.split('\n')) {
         if (line.contains("silence_start:")) {
@@ -355,15 +382,19 @@ QList<QPair<double, double>> MediaEngine::detectVoiceSegments(const QString &aud
     return voiceBlocks;
 }
 
-QList<QPair<double, double>> MediaEngine::detectVisualSegments(const QString &path, double duration, QString &error) {
+QList<QPair<double, double>> MediaEngine::detectVisualSegments(const QString &path, double duration, QString &error, const std::function<void(double)> &onProgress) {
     constexpr int width = 160, height = 90, frameBytes = width * height;
     constexpr double step = 0.5;
+    if (m_aiPaused || m_aiCancelled) return {};
     QProcess process;
     // One decode pass; only two small grayscale frames are retained in memory.
     process.start("ffmpeg", {"-v", "error", "-i", path, "-map", "0:v:0", "-an",
         "-vf", "fps=2,scale=160:90:flags=fast_bilinear,format=gray", "-f", "rawvideo", "pipe:1"});
-    if (!process.waitForStarted(5000)) { error = "无法启动 FFmpeg"; return {}; }
+    if (!process.waitForStarted(5000)) { if (!m_aiPaused && !m_aiCancelled) error = "无法启动 FFmpeg"; return {}; }
     QByteArray pending, previous, diagnostic;
+    QElapsedTimer clock;
+    clock.start();
+    double reported = -1;
     QList<QPair<double, double>> spans;
     qint64 index = 0;
     double runStart = -1;
@@ -388,16 +419,22 @@ QList<QPair<double, double>> MediaEngine::detectVisualSegments(const QString &pa
             offset += frameBytes;
         }
         pending.remove(0, offset);
+        if (onProgress && duration > 0 && clock.elapsed() >= 400) {
+            const double fraction = std::min(0.999, std::max(0.0, index * step / duration));
+            if (fraction >= reported + 0.02) { onProgress(fraction); reported = fraction; }
+            clock.restart();
+        }
     };
     while (process.state() != QProcess::NotRunning) {
         process.waitForReadyRead(100);
         drain();
-        if (m_aiCancelled) {
+        if (m_aiCancelled || m_aiPaused) {
             process.kill(); process.waitForFinished(5000);
             return {};
         }
     }
     drain();
+    if (m_aiPaused || m_aiCancelled) return {};
     if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 || index == 0 || !pending.isEmpty()) {
         error = "画面分析失败: " + diagnostic;
         return {};
@@ -464,7 +501,7 @@ void MediaEngine::pauseAiScreening(const QString &reason) {
         return;
     }
     m_aiPaused = true;
-    emit statusMessage("正在完成当前素材并保存进度，请稍候再拔出设备");
+    emit statusMessage("正在暂停，停止读取存储卡后再拔出设备");
 }
 
 void MediaEngine::resumeAiScreening() {
@@ -479,7 +516,12 @@ void MediaEngine::cancelCurrentJob() {
 }
 
 void MediaEngine::safeEjectDevice() {
-    pauseAiScreening("准备拔出设备录像");
+    if (!m_aiQuiesced) {
+        if (m_aiRunning) pauseAiScreening("准备拔出设备录像");
+        else emit statusMessage("当前没有正在处理的筛选任务，请确认其他程序已停止读取设备");
+        return;
+    }
+    emit statusMessage("检查点已留存！现在可安全拔出相机去录像，插回后可随时续接。");
 }
 
 void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringList &selectedPaths, const QString &mode, double targetDurationSec, const QString &canvasMode, const QString &targetColor) {
@@ -493,6 +535,7 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
 
     if (m_aiRunning.exchange(true)) { emit statusMessage("已有初筛任务正在停止，请稍后重试"); return; }
     m_aiPaused = false;
+    m_aiQuiesced = false;
     m_aiCancelled = false;
 
     QMap<QString, QVariantMap> poolMap;
@@ -534,15 +577,18 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
             }
             if (m_aiPaused) {
                 bool saved = saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
+                m_aiQuiesced = true;
                 QMetaObject::invokeMethod(this, [this, idx, total, saved]() { emit aiPaused(idx, total, saved ? "检查点已保存" : "检查点保存失败，请勿退出应用"); });
             }
             while (m_aiPaused) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
                 if (m_aiCancelled) {
+                    m_aiQuiesced = false;
                     saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
                     return;
                 }
             }
+            m_aiQuiesced = false;
 
             QString path = effPaths[idx];
             QVariantMap meta = poolMap.value(path);
@@ -558,31 +604,41 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
             QVariantList currentFileTasks;
             QString analysisError;
             std::vector<screening::Span> candidates;
+            auto report = [&](double clipFraction, const QString &label) {
+                const double fraction = std::clamp(clipFraction, 0.0, 0.999);
+                const double percent = std::max(1.0, std::min(99.0, ((idx + fraction) / total) * 100.0));
+                const QString text = QString("[%1/%2] %3: %4 · 本段 %5%")
+                    .arg(idx + 1).arg(total).arg(label).arg(filename).arg(int(std::lround(fraction * 100)));
+                QMetaObject::invokeMethod(this, [this, percent, text]() { emit aiProgress(percent, text); });
+            };
             if (mode != "1") {
                 // No audio is a valid empty result; it is not a reason to retain
                 // the first 25 seconds of silent footage.
                 QVariantMap sourceMeta = meta.contains("has_audio") ? meta : probeFile(path);
+                if (m_aiPaused || m_aiCancelled) { --idx; continue; }
                 if (sourceMeta.isEmpty()) analysisError = "无法读取素材信息";
                 else if (sourceMeta.value("has_audio").toBool()) {
                     const auto voices = detectVoiceSegments(path, -30.0,
-                        mode == "4" ? 0.6 : 0.8, 0.3, &analysisError);
+                        mode == "4" ? 0.6 : 0.8, 0.3, &analysisError, dur,
+                        [&](double fraction) { report(mode == "3" ? fraction * 0.5 : fraction, "分析音频"); });
+                    if (m_aiPaused || m_aiCancelled) { --idx; continue; }
                     for (const auto &voice : voices) {
                         const double padding = mode == "4" ? 0.15 : 0.0;
                         candidates.emplace_back(voice.first - padding, voice.second + padding);
                     }
                 }
             }
-            if ((mode == "1" || mode == "3") && analysisError.isEmpty() && !m_aiCancelled) {
-                QMetaObject::invokeMethod(this, [this, pInit, filename]() {
-                    emit aiProgress(pInit, "检查画面曝光、细节与变化幅度: " + filename);
-                });
-                const auto visuals = detectVisualSegments(path, dur, analysisError);
+            if ((mode == "1" || mode == "3") && analysisError.isEmpty() && !m_aiCancelled && !m_aiPaused) {
+                const auto visuals = detectVisualSegments(path, dur, analysisError,
+                    [&](double fraction) { report(mode == "3" ? 0.5 + fraction * 0.5 : fraction, "检查画面"); });
+                if (m_aiPaused || m_aiCancelled) { --idx; continue; }
                 for (const auto &visual : visuals) candidates.emplace_back(visual.first, visual.second);
             }
             if (m_aiCancelled) {
                 saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
                 return;
             }
+            if (m_aiPaused) { --idx; continue; }
             if (!analysisError.isEmpty() && QFileInfo::exists(path)) {
                 saveAiCheckpoint(effPaths, idx, allTasks, mode, targetDurationSec);
                 QMetaObject::invokeMethod(this, [this, filename, analysisError]() {
@@ -618,8 +674,10 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
 
         if (m_aiPaused && !m_aiCancelled) {
             bool saved = saveAiCheckpoint(effPaths, total, allTasks, mode, targetDurationSec);
+            m_aiQuiesced = true;
             QMetaObject::invokeMethod(this, [this, total, saved]() { emit aiPaused(total, total, saved ? "检查点已保存" : "检查点保存失败，请勿退出应用"); });
             while (m_aiPaused && !m_aiCancelled) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            m_aiQuiesced = false;
         }
         if (m_aiCancelled) return;
 
@@ -758,15 +816,37 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             const int h = masterCanvas == "vertical" ? 3840 : 2160;
             const int bw = masterCanvas == "vertical" ? 270 : 480;
             const int bh = masterCanvas == "vertical" ? 480 : 270;
-            const int rotation = t.value("transpose").toInt();
-            QString prefix = rotation == 1 || rotation == 2 ? QString("transpose=%1,").arg(rotation) : QString();
+            const int transpose = t.value("transpose").toInt();
+            int streamRotation = stream.value("tags").toObject().value("rotate").toString().toInt();
+            for (const auto &side : stream.value("side_data_list").toArray()) {
+                if (side.toObject().contains("rotation")) streamRotation = side.toObject().value("rotation").toInt();
+            }
+            const QString sar = stream.value("sample_aspect_ratio").toString();
+            const int colon = sar.indexOf(':');
+            double par = 1;
+            if (colon > 0) {
+                bool okN = false, okD = false;
+                const double n = sar.left(colon).toDouble(&okN), d = sar.mid(colon + 1).toDouble(&okD);
+                if (okN && okD && n > 0 && d > 0) par = n / d;
+            }
+            double clipAspect = stream.value("width").toInt() > 0 && stream.value("height").toInt() > 0
+                ? stream.value("width").toInt() * par / stream.value("height").toInt() : 0;
+            const int turns = ((streamRotation % 360) + 360) % 360;
+            if (clipAspect > 0 && (turns == 90 || turns == 270)) clipAspect = 1 / clipAspect;
+            if (clipAspect > 0 && (transpose == 1 || transpose == 2)) clipAspect = 1 / clipAspect;
+            const double outputAspect = double(w) / h;
+            const bool sameAspect = clipAspect > 0 && std::abs(clipAspect - outputAspect) / std::max(clipAspect, outputAspect) <= 0.02;
+            const QString pix = targetColor == "10bit" ? "yuv420p10" : "yuv420";
+            QString prefix = transpose == 1 || transpose == 2 ? QString("transpose=%1,").arg(transpose) : QString();
             prefix += colorFilter;
-            QString filter = QString("[0:v:0]%1split=2[fgin][bgin];"
-                "[bgin]scale=%2:%3:force_original_aspect_ratio=increase,crop=%2:%3,boxblur=8:2,"
-                "scale=%4:%5:flags=fast_bilinear,eq=brightness=-0.08:saturation=1.15[bg];"
-                "[fgin]scale=%4:%5:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];"
-                "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=%6,setsar=1[outv]")
-                .arg(prefix).arg(bw).arg(bh).arg(w).arg(h).arg(targetColor == "10bit" ? "yuv420p10" : "yuv420");
+            QString filter = sameAspect
+                ? QString("[0:v:0]%1scale=%2:%3:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=%2:%3:(ow-iw)/2:(oh-ih)/2,format=%4,setsar=1[outv]").arg(prefix).arg(w).arg(h).arg(pix)
+                : QString("[0:v:0]%1split=2[fgin][bgin];"
+                    "[bgin]scale=%2:%3:force_original_aspect_ratio=increase,crop=%2:%3,boxblur=8:2,"
+                    "scale=%4:%5:flags=fast_bilinear,eq=brightness=-0.08:saturation=1.15[bg];"
+                    "[fgin]scale=%4:%5:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];"
+                    "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=%6,setsar=1[outv]")
+                    .arg(prefix).arg(bw).arg(bh).arg(w).arg(h).arg(pix);
             args << "-filter_complex" << filter << "-map" << "[outv]" << "-map" << (hasAudio ? "0:a:0" : "1:a:0");
 
 #if defined(Q_OS_MAC)

@@ -666,6 +666,7 @@ ApplicationWindow {
         function onAiFailed(message) {
             aiModal.isRunning = false
             aiModal.isPaused = false
+            aiModal.isPausing = false
             aiModal.progress = 0
             aiModal.statusText = message
             statusBanner.show("筛选失败，原时间线已保留：" + message)
@@ -676,6 +677,7 @@ ApplicationWindow {
             aiModal.isRunning = false
             aiModal.progress = 0
             aiModal.isPaused = false
+            aiModal.isPausing = false
             aiModal.close()
             root.pushUndoState("应用 AI 智能初筛结果")
             root.timelineClips = tasks
@@ -694,14 +696,16 @@ ApplicationWindow {
 
         function onAiPaused(completed, total, reason) {
             aiModal.isRunning = true
+            aiModal.isPausing = false
             aiModal.isPaused = true
-            aiModal.statusText = "任务已暂停 (" + reason + ") · 进度 " + completed + "/" + total
-            statusBanner.show("初筛任务已暂停：" + reason)
+            aiModal.statusText = "已暂停 (" + reason + ") · 已停止读取 (" + completed + "/" + total + ")"
+            statusBanner.show("初筛已暂停，已停止读取存储卡")
         }
 
         function onAiResumed() {
             aiModal.isRunning = true
             aiModal.isPaused = false
+            aiModal.isPausing = false
             statusBanner.show("已从断点继续执行 AI 任务")
         }
 
@@ -1673,8 +1677,8 @@ ApplicationWindow {
                             visible: aiModal.isRunning
                             Layout.fillWidth: true
                             Layout.preferredHeight: 120
-                            color: aiModal.isPaused ? "#241808" : "#182032"
-                            border.color: aiModal.isPaused ? "#f59e0b" : "#3b82f6"
+                            color: (aiModal.isPaused || aiModal.isPausing) ? "#241808" : "#182032"
+                            border.color: (aiModal.isPaused || aiModal.isPausing) ? "#f59e0b" : "#3b82f6"
                             border.width: 1.5
                             radius: 8
 
@@ -1684,7 +1688,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     Rectangle {
                                         width: 8; height: 8; radius: 4
-                                        color: aiModal.isPaused ? "#fbbf24" : "#34d399"
+                                        color: (aiModal.isPaused || aiModal.isPausing) ? "#fbbf24" : "#34d399"
                                         SequentialAnimation on opacity {
                                             running: aiModal.isRunning && !aiModal.isPaused
                                             loops: Animation.Infinite
@@ -1693,8 +1697,8 @@ ApplicationWindow {
                                         }
                                     }
                                     Text {
-                                        text: aiModal.isPaused ? "任务已安全暂停" : "AI 智能初筛全速进行中"
-                                        color: aiModal.isPaused ? "#fde68a" : "#38bdf8"
+                                        text: aiModal.isPaused ? "已暂停" : (aiModal.isPausing ? "正在暂停…" : "AI 智能初筛全速进行中")
+                                        color: (aiModal.isPaused || aiModal.isPausing) ? "#fde68a" : "#38bdf8"
                                         font.bold: true
                                         font.pixelSize: 13
                                     }
@@ -1707,14 +1711,13 @@ ApplicationWindow {
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 6
                                     Button {
-                                        text: aiModal.isPaused ? "继续初筛" : "暂停"
+                                        text: aiModal.isPaused ? "继续初筛" : (aiModal.isPausing ? "正在暂停…" : "暂停")
+                                        enabled: !aiModal.isPausing
                                         onClicked: {
-                                            if (aiModal.isPaused) {
-                                                bridge.resumeAiScreening()
-                                                aiModal.isPaused = false
-                                            } else {
+                                            if (aiModal.isPaused) bridge.resumeAiScreening()
+                                            else if (!aiModal.isPausing) {
+                                                aiModal.isPausing = true
                                                 bridge.pauseAiScreening("移动端主动暂停")
-                                                aiModal.isPaused = true
                                             }
                                         }
                                         background: Rectangle { color: aiModal.isPaused ? "#2563eb" : "#334155"; radius: 4 }
@@ -1722,9 +1725,11 @@ ApplicationWindow {
                                     }
                                     Button {
                                         text: "安全拔卡去录像"
+                                        enabled: aiModal.isPaused
+                                        opacity: enabled ? 1.0 : 0.4
                                         onClicked: bridge.safeEjectDevice()
-                                        background: Rectangle { color: "#065f46"; radius: 4; border.color: "#10b981" }
-                                        contentItem: Text { text: parent.text; color: "#6ee7b7"; font.bold: true; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                        background: Rectangle { color: parent.enabled ? "#065f46" : "#1a2e26"; radius: 4; border.color: parent.enabled ? "#10b981" : "#1e4033" }
+                                        contentItem: Text { text: parent.text; color: parent.enabled ? "#6ee7b7" : "#47705c"; font.bold: true; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                                     }
                                     Item { Layout.fillWidth: true }
                                     Button {
@@ -1734,6 +1739,7 @@ ApplicationWindow {
                                             aiModal.isRunning = false
                                             aiModal.progress = 0
                                             aiModal.isPaused = false
+                                            aiModal.isPausing = false
                                         }
                                         background: Rectangle { color: "#7f1d1d"; radius: 4 }
                                         contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
@@ -1821,6 +1827,7 @@ ApplicationWindow {
                             text: {
                                 if (aiModal.isRunning) {
                                     if (aiModal.isPaused) return "初筛已暂停 (点击上方继续)"
+                                    if (aiModal.isPausing) return "正在暂停，等待停止读取…"
                                     return "AI 初筛全速进行中..."
                                 }
                                 return "开始 AI 智能初筛 (" + (root.selectedCount > 0 ? ("已选 " + root.selectedCount + " 个") : ("全部 " + root.mediaPool.length + " 个素材")) + ")"
@@ -1848,6 +1855,7 @@ ApplicationWindow {
                                 aiModal.isRunning = true
                                 aiModal.progress = 1
                                 aiModal.isPaused = false
+                                aiModal.isPausing = false
                                 aiModal.statusText = "正在启动初筛管道..."
                                 bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
                             }
@@ -3097,6 +3105,7 @@ ApplicationWindow {
                                 aiModal.isRunning = false
                                 aiModal.progress = 0
                                 aiModal.isPaused = false
+                                aiModal.isPausing = false
                             }
                             aiModal.close()
                         }
@@ -3111,6 +3120,7 @@ ApplicationWindow {
         property string statusText: "准备就绪"
         property bool isRunning: false
         property bool isPaused: false
+        property bool isPausing: false
 
         onAboutToShow: {
             if (!aiModal.isRunning) {
@@ -3328,8 +3338,8 @@ ApplicationWindow {
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 64
-                color: aiModal.isRunning ? (aiModal.isPaused ? "#241808" : "#0d1b2a") : "#141722"
-                border.color: aiModal.isRunning ? (aiModal.isPaused ? "#d97706" : "#2563eb") : "#2a2f42"
+                color: aiModal.isRunning ? ((aiModal.isPaused || aiModal.isPausing) ? "#241808" : "#0d1b2a") : "#141722"
+                border.color: aiModal.isRunning ? ((aiModal.isPaused || aiModal.isPausing) ? "#d97706" : "#2563eb") : "#2a2f42"
                 border.width: aiModal.isRunning ? 1.5 : 1
                 radius: 6
 
@@ -3346,8 +3356,8 @@ ApplicationWindow {
                             height: 20
                             width: statusBadgeText.implicitWidth + 18
                             radius: 10
-                            color: !aiModal.isRunning ? "#1e293b" : (aiModal.isPaused ? "#78350f" : "#064e3b")
-                            border.color: !aiModal.isRunning ? "#475569" : (aiModal.isPaused ? "#f59e0b" : "#10b981")
+                            color: !aiModal.isRunning ? "#1e293b" : ((aiModal.isPaused || aiModal.isPausing) ? "#78350f" : "#064e3b")
+                            border.color: !aiModal.isRunning ? "#475569" : ((aiModal.isPaused || aiModal.isPausing) ? "#f59e0b" : "#10b981")
 
                             RowLayout {
                                 anchors.centerIn: parent
@@ -3356,7 +3366,7 @@ ApplicationWindow {
                                     width: 6
                                     height: 6
                                     radius: 3
-                                    color: !aiModal.isRunning ? "#94a3b8" : (aiModal.isPaused ? "#fbbf24" : "#34d399")
+                                    color: !aiModal.isRunning ? "#94a3b8" : ((aiModal.isPaused || aiModal.isPausing) ? "#fbbf24" : "#34d399")
 
                                     SequentialAnimation on opacity {
                                         running: aiModal.isRunning && !aiModal.isPaused
@@ -3367,8 +3377,8 @@ ApplicationWindow {
                                 }
                                 Text {
                                     id: statusBadgeText
-                                    text: !aiModal.isRunning ? "待机就绪" : (aiModal.isPaused ? "任务已暂停" : "初筛全速进行中")
-                                    color: !aiModal.isRunning ? "#94a3b8" : (aiModal.isPaused ? "#fde68a" : "#6ee7b7")
+                                    text: !aiModal.isRunning ? "待机就绪" : (aiModal.isPaused ? "已暂停" : (aiModal.isPausing ? "正在暂停…" : "初筛全速进行中"))
+                                    color: !aiModal.isRunning ? "#94a3b8" : ((aiModal.isPaused || aiModal.isPausing) ? "#fde68a" : "#6ee7b7")
                                     font.pixelSize: 10
                                     font.bold: true
                                 }
@@ -3381,7 +3391,7 @@ ApplicationWindow {
                         Text {
                             visible: aiModal.isRunning
                             text: Math.round(aiModal.progress) + "%"
-                            color: aiModal.isPaused ? "#fbbf24" : "#38bdf8"
+                            color: (aiModal.isPaused || aiModal.isPausing) ? "#fbbf24" : "#38bdf8"
                             font.bold: true
                             font.pixelSize: 13
                         }
@@ -3400,7 +3410,7 @@ ApplicationWindow {
                             anchors.bottom: parent.bottom
                             width: Math.max(0, Math.min(parent.width, parent.width * (aiModal.progress / 100.0)))
                             radius: 3
-                            color: aiModal.isPaused ? "#f59e0b" : "#3b82f6"
+                            color: (aiModal.isPaused || aiModal.isPausing) ? "#f59e0b" : "#3b82f6"
 
                             Behavior on width {
                                 NumberAnimation { duration: 180 }
@@ -3411,7 +3421,7 @@ ApplicationWindow {
                     // 详细步骤文本
                     Text {
                         text: aiModal.statusText
-                        color: aiModal.isRunning ? (aiModal.isPaused ? "#fbbf24" : "#e2e8f0") : "#94a3b8"
+                        color: aiModal.isRunning ? ((aiModal.isPaused || aiModal.isPausing) ? "#fbbf24" : "#e2e8f0") : "#94a3b8"
                         font.pixelSize: 11
                         Layout.fillWidth: true
                         elide: Text.ElideMiddle
@@ -3430,6 +3440,7 @@ ApplicationWindow {
                         aiModal.isRunning = false
                         aiModal.progress = 0
                         aiModal.isPaused = false
+                        aiModal.isPausing = false
                         aiModal.close()
                     }
                     background: Rectangle {
@@ -3448,16 +3459,14 @@ ApplicationWindow {
                 }
 
                 Button {
-                    text: aiModal.isPaused ? "继续初筛" : "暂停"
-                    enabled: aiModal.isRunning
+                    text: aiModal.isPaused ? "继续初筛" : (aiModal.isPausing ? "正在暂停…" : "暂停")
+                    enabled: aiModal.isRunning && !aiModal.isPausing
                     opacity: enabled ? 1.0 : 0.4
                     onClicked: {
-                        if (aiModal.isPaused) {
-                            bridge.resumeAiScreening()
-                            aiModal.isPaused = false
-                        } else {
+                        if (aiModal.isPaused) bridge.resumeAiScreening()
+                        else if (!aiModal.isPausing) {
+                            aiModal.isPausing = true
                             bridge.pauseAiScreening("用户主动暂停")
-                            aiModal.isPaused = true
                         }
                     }
                     background: Rectangle {
@@ -3477,7 +3486,7 @@ ApplicationWindow {
 
                 Button {
                     text: "安全拔卡去录像"
-                    enabled: aiModal.isRunning
+                    enabled: aiModal.isPaused
                     opacity: enabled ? 1.0 : 0.4
                     onClicked: bridge.safeEjectDevice()
                     background: Rectangle {
@@ -3502,6 +3511,7 @@ ApplicationWindow {
                     text: {
                         if (aiModal.isRunning) {
                             if (aiModal.isPaused) return "初筛已暂停 (请点击左侧「继续初筛」)"
+                            if (aiModal.isPausing) return "正在暂停，等待停止读取…"
                             return "初筛全速进行中..."
                         }
                         return "开始 / 续接初筛"
@@ -3542,6 +3552,7 @@ ApplicationWindow {
                         aiModal.isRunning = true
                         aiModal.progress = 1.0
                         aiModal.isPaused = false
+                        aiModal.isPausing = false
                         aiModal.statusText = "正在启动初筛管道..."
                         bridge.startAiScreening(root.mediaPool, root.getSelectedPathsList(), mode, maxDur, canvasMode, root.targetColor)
                     }
