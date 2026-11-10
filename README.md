@@ -60,31 +60,20 @@
 
 ## 下载与运行
 
-### 1. 原生 C++ 极致轻量版 (约 30MB ~ 35MB · 推荐)
-脱离 Python 运行时，采用纯 C++ (Qt 6) 编译，体积仅为传统独立打包的五分之一：
+GitHub Actions 会打出这些包，也可在 [Releases](https://github.com/chinghoi/suijian/releases) 下载：
+
 * macOS: `SuiJian-Native-macOS.dmg`
+* Windows: `SuiJian-Native-Windows.zip`（解压后运行 `随剪.exe`）
 * Linux: `SuiJian-Native-Linux-x64.tar.gz`
 
-### 2. 开箱即用全功能独立版
-免配环境独立发布包，解压即用：
-* macOS: `SuiJian-macOS.dmg`
-* Windows: `SuiJian-Windows.zip` (解压后直接双击运行 `随剪.exe`)
-* Linux: `SuiJian-Linux.tar.gz`
+本地编译需要 Qt 6（Core、Gui、Quick、QuickControls2、Multimedia）、CMake 3.20+、C++17，以及运行时能调用的 `ffmpeg` 和 `ffprobe`。
 
-可直接在 [GitHub Releases 页面](https://github.com/chinghoi/suijian/releases) 或 [Actions 构建产物](https://github.com/chinghoi/suijian/actions) 中下载最新版本。
-
-### 3. 本地编译与源码运行
-
-#### 原生 C++ 编译运行 (推荐 · 纯净轻量)
 ```bash
-# 依赖: Qt 6 (Core, Gui, Quick, QuickControls2, Multimedia), CMake 3.20+, C++17
 cmake -B build
 cmake --build build -j
 ./build/随剪.app/Contents/MacOS/随剪    # macOS
-./build/随剪                           # Linux
+./build/DJIEditor                      # Linux
 ```
-
-工程只保留 C++ 实现，不再提供 Python 启动方式。
 
 ---
 
@@ -103,7 +92,7 @@ cmake --build build -j
 ### 近期规划
 - [x] **3D LUT**：导出面板可选择标准 `.cube`，仅在 8-bit SDR 成片上通过 FFmpeg `lut3d` 套用。未选择时不影响原来的 HLG 母带路径。
 - [x] **音乐重音卡点**：可导入自己的音乐，或使用程序生成的一段示范鼓点，把镜头入点吸到附近重音。没有内置曲库。
-- [ ] **Android APK**：`scripts/build_android.sh` 与手动工作流 `.github/workflows/android.yml` 面向 Qt Android 套件。仓库已没有 PySide，不能再用 `pyside6-android-deploy`。本环境没有 Android SDK，没有打出 APK。
+- [ ] **Android APK**：`scripts/build_android.sh` 需要本机的 Android SDK 和 Qt Android 套件。这里没有打出 APK。
 
 ### 中期规划
 - [x] **朋友圈 / 小红书文案**：按镜头数量和时长生成文案，并截一张时间线中点附近的关键帧。不识别画面里是什么。
