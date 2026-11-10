@@ -10,6 +10,7 @@
 #include <QTimer>
 #include <QSet>
 #include <atomic>
+#include <functional>
 #include <thread>
 #include <vector>
 
@@ -36,6 +37,13 @@ public slots:
     void generateSrt(const QVariantList &clips, const QString &outputPath);
     void exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath);
     void exportFcpxml(const QVariantList &clips, const QString &masterCanvas, const QString &outputPath);
+    void setExportLut(const QString &cubePath);
+    void exportJianying(const QVariantList &clips, const QString &masterCanvas, const QString &outputDir);
+    QString builtinBeatTrack();
+    QVariantList snapToMusic(const QVariantList &clips, const QString &musicPath);
+    QVariantList arrangeStoryline(const QVariantList &clips);
+    QVariantList roughCutByWords(const QVariantList &clips, const QString &query);
+    QString socialCopy(const QVariantList &clips, const QString &platform);
 
 signals:
     void mediaLoaded(const QStringList &dates, const QVariantList &mediaList, const QString &sourceLabel);
@@ -61,8 +69,8 @@ signals:
 private:
     void checkDeviceHeartbeat();
     QVariantMap probeFile(const QString &filepath);
-    QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr);
-    QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error);
+    QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr, double duration = 0, const std::function<void(double)> &onProgress = {});
+    QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error, const std::function<void(double)> &onProgress = {});
     bool saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec);
     QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode, double targetDurationSec);
     void clearAiCheckpoint();
@@ -74,6 +82,7 @@ private:
     QTimer *m_heartbeatTimer = nullptr;
 
     std::atomic<bool> m_aiPaused{false};
+    std::atomic<bool> m_aiQuiesced{false};
     std::atomic<bool> m_aiRunning{false};
     std::atomic<bool> m_exportRunning{false};
     std::atomic<bool> m_exportCancelled{false};
@@ -81,4 +90,5 @@ private:
     std::atomic<bool> m_aiCancelled{false};
     QVariantList m_currentAiTasks;
     QProcess *m_exportProcess = nullptr;
+    QString m_lutPath;
 };

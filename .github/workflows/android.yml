@@ -1,0 +1,19 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apk:
+    name: Qt Android package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with the Qt Android kit
+        env:
+          ANDROID_SDK_ROOT: ${{ secrets.ANDROID_SDK_ROOT }}
+          QT_ANDROID_ROOT: ${{ secrets.QT_ANDROID_ROOT }}
+          ANDROID_NDK_ROOT: ${{ secrets.ANDROID_NDK_ROOT }}
+        run: |
+          chmod +x scripts/build_android.sh
+          scripts/build_android.sh
