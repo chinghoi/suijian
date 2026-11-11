@@ -85,9 +85,7 @@ jobs:
           cmake --build build --config Release
           "$(brew --prefix qt)/bin/macdeployqt" build/随剪.app -qmldir=qml
           find build -name "*.dylib" -exec strip -S {} + 2>/dev/null || true
-          mkdir -p dist-native
-          cp -R build/随剪.app dist-native/ 2>/dev/null || cp -R build/DJIEditor.app dist-native/随剪.app 2>/dev/null || true
-          hdiutil create -volname "随剪-原生版" -srcfolder dist-native/随剪.app -ov -format UDZO SuiJian-Native-macOS.dmg
+          bash scripts/package_macos_dmg.sh build/随剪.app "随剪-原生版" SuiJian-Native-macOS.dmg
 
       - name: Upload Native macOS DMG
         uses: actions/upload-artifact@v4
@@ -132,9 +130,7 @@ jobs:
           echo "QtCore: $(lipo -info "$qtcore")"
           lipo -info "$bin" | grep -q x86_64
           lipo -info "$qtcore" | grep -q x86_64
-          mkdir -p dist-native
-          cp -R build/随剪.app dist-native/
-          hdiutil create -volname "随剪-Intel" -srcfolder dist-native/随剪.app -ov -format UDZO SuiJian-Native-macOS-Intel.dmg
+          bash scripts/package_macos_dmg.sh build/随剪.app "随剪-Intel" SuiJian-Native-macOS-Intel.dmg
 
       - name: Upload Native macOS Intel DMG
         uses: actions/upload-artifact@v4

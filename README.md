@@ -67,6 +67,8 @@ GitHub Actions 会打出这些包，也可在 [Releases](https://github.com/chin
 * Windows: `SuiJian-Native-Windows.zip`（解压后运行 `随剪.exe`，包里带有 Qt，同样需要本机 FFmpeg）
 * Linux: `SuiJian-Native-Linux-x64.tar.gz` 里只有可执行文件。系统里要有兼容的 Qt 6、Qt Quick 和 `ffmpeg` / `ffprobe`，否则打不开或不能处理视频。
 
+macOS 安装时，打开 DMG，把「随剪.app」拖到同一窗口的「Applications（应用程序）」图标，再从「应用程序」打开随剪。
+
 本地编译需要 Qt 6（Core、Gui、Quick、QuickControls2、Multimedia、Network）、CMake 3.20+、C++17，以及运行时能调用的 `ffmpeg` 和 `ffprobe`。HDR 转 SDR 还需要带 `zscale` 和 `tonemap` 的 FFmpeg；没有这两个滤镜时导出会停下来说明原因。
 
 ```bash
