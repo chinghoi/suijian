@@ -3041,87 +3041,84 @@ ApplicationWindow {
 
                     // 监视器控制栏
                     Rectangle {
-                        Layout.fillWidth: true; Layout.preferredHeight: 48
-                        color: "#11131a"; border.color: "#1e222d"; border.width: 1
+                        id: desktopPlaybackBar
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: desktopPlaybackLayout.implicitHeight + 16
+                        color: "#11131a"
+                        border.color: "#1e222d"
 
-                        RowLayout {
-                            anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 12
+                        GridLayout {
+                            id: desktopPlaybackLayout
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            anchors.topMargin: 8
+                            anchors.bottomMargin: 8
+                            columnSpacing: 8
+                            rowSpacing: 6
+                            columns: desktopPlaybackBar.width < 720 ? 1 : 2
 
-                            Button {
-                                text: "-1s"
-                                enabled: root.monitorMode !== "idle"
-                                opacity: enabled ? 1.0 : 0.35
-                                onClicked: player.position = Math.max(0, player.position - 1000)
-                                background: Rectangle { color: "#222533"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-
-                            Button {
-                                enabled: root.monitorMode !== "idle"
-                                opacity: enabled ? 1.0 : 0.35
-                                text: player.playbackState === MediaPlayer.PlayingState ? "暂停" : "播放"
-                                onClicked: {
-                                    if (player.playbackState === MediaPlayer.PlayingState) player.pause()
-                                    else player.play()
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 6
+                                EditorButton {
+                                    text: "−1秒"
+                                    enabled: root.monitorMode !== "idle" && !root.pendingMonitorLoad
+                                    onClicked: player.position = Math.max(0, player.position - 1000)
                                 }
-                                background: Rectangle { color: parent.enabled ? "#3b82f6" : "#222533"; radius: 4; Layout.preferredWidth: 64 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-
-                            Button {
-                                text: "+1s"
-                                enabled: root.monitorMode !== "idle"
-                                opacity: enabled ? 1.0 : 0.35
-                                onClicked: player.position = player.position + 1000
-                                background: Rectangle { color: "#222533"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-
-                            Text {
-                                font.bold: true; font.pixelSize: 12
-                                color: root.monitorMode === "idle" ? "#64748b" : (root.monitorMode === "preview" ? "#38bdf8" : "#a78bfa")
-                                text: {
-                                    if (root.monitorMode === "idle") {
-                                        return "00:00.0 / 00:00.0 (未载入媒体)"
-                                    } else if (root.monitorMode === "preview") {
-                                        var curSec = player.position / 1000.0
-                                        var totSec = (root.previewItem && root.previewItem.duration) ? root.previewItem.duration : (player.duration / 1000.0)
-                                        return root.formatTime(curSec) + " / " + root.formatTime(totSec) + " (素材源片预览)"
-                                    } else {
-                                        var curPos = player.position / 1000.0
-                                        var curClip = (root.timelineClips.length > root.activeClipIndex && root.activeClipIndex >= 0) ? root.timelineClips[root.activeClipIndex] : null
-                                        var clipDurStr = curClip ? curClip.dur_str : "0s"
-                                        var clipIdxStr = "镜头 " + (root.activeClipIndex + 1) + "/" + root.timelineClips.length
-                                        return root.formatTime(curPos) + " (截取 " + clipDurStr + " · " + clipIdxStr + ") · 成片总长: " + root.formatDuration(root.totalMovieDuration)
+                                EditorButton {
+                                    text: player.playbackState === MediaPlayer.PlayingState && !root.monitorPriming ? "暂停" : "播放"
+                                    primary: true
+                                    enabled: root.monitorMode !== "idle" && !root.pendingMonitorLoad
+                                    onClicked: {
+                                        if (player.playbackState === MediaPlayer.PlayingState) player.pause()
+                                        else player.play()
+                                    }
+                                }
+                                EditorButton {
+                                    text: "+1秒"
+                                    enabled: root.monitorMode !== "idle" && !root.pendingMonitorLoad
+                                    onClicked: player.position += 1000
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    Layout.minimumWidth: 0
+                                    color: "#cbd5e1"
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                    text: {
+                                        if (root.monitorMode === "idle") return "等待选择视频"
+                                        const clip = root.monitorMode === "timeline" ? root.timelineClips[root.activeClipIndex] : null
+                                        const total = clip ? clip.dur : player.duration / 1000
+                                        const position = player.position / 1000 - (clip ? clip.start : 0)
+                                        const time = root.formatTime(Math.max(0, Math.min(total, position))) + " / " + root.formatTime(total)
+                    return time
                                     }
                                 }
                             }
 
-                            Item { Layout.fillWidth: true }
-
-                            Button {
-                                visible: root.monitorMode === "timeline" && root.timelineClips.length > 0
-                                text: root.isContinuousPlay ? "连续播放成片" : "单镜头循环"
-                                onClicked: root.isContinuousPlay = !root.isContinuousPlay
-                                background: Rectangle { color: root.isContinuousPlay ? "#1d4ed8" : "#334155"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-
-                            Button {
-                                text: root.isTheaterMode ? "恢复视窗" : "剧场大屏"
-                                onClicked: root.isTheaterMode = !root.isTheaterMode
-                                background: Rectangle { color: "#222533"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                            }
-
-                            Button {
-                                text: "全屏"
-                                onClicked: {
-                                    if (root.visibility === Window.FullScreen) root.visibility = Window.AutomaticVisibility
-                                    else root.visibility = Window.FullScreen
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: 0
+                                spacing: 6
+                                Item { Layout.fillWidth: true }
+                                EditorButton {
+                                    visible: root.monitorMode === "timeline" && root.timelineClips.length > 0
+                                    text: root.isContinuousPlay ? "顺序播放" : "循环本段"
+                                    onClicked: root.isContinuousPlay = !root.isContinuousPlay
                                 }
-                                background: Rectangle { color: "#222533"; radius: 4 }
-                                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                EditorButton {
+                                    text: root.isTheaterMode ? "恢复视窗" : "剧场大屏"
+                                    onClicked: root.isTheaterMode = !root.isTheaterMode
+                                }
+                                EditorButton {
+                                    text: root.visibility === Window.FullScreen ? "退出全屏" : "全屏"
+                                    onClicked: {
+                                        if (root.visibility === Window.FullScreen) root.visibility = Window.AutomaticVisibility
+                                        else root.visibility = Window.FullScreen
+                                    }
+                                }
                             }
                         }
                     }
