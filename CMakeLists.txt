@@ -64,6 +64,11 @@ if (BUILD_TESTING)
     add_test(NAME text_badge COMMAND text_badge_test "${CMAKE_CURRENT_SOURCE_DIR}/qml")
     set_tests_properties(text_badge PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software" TIMEOUT 15)
+    add_executable(qml_window_test tests/QmlWindowTest.cpp)
+    target_link_libraries(qml_window_test PRIVATE Qt6::Quick Qt6::QuickControls2)
+    add_test(NAME qml_window COMMAND qml_window_test "${CMAKE_CURRENT_SOURCE_DIR}/qml/AppWindow.qml")
+    set_tests_properties(qml_window PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software" TIMEOUT 20)
     find_program(NODE_EXECUTABLE node)
     if (NODE_EXECUTABLE)
         add_test(NAME qml_logic COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/QmlLogicTest.cjs)

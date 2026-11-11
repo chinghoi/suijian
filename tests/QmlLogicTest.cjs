@@ -99,4 +99,18 @@ for (const type of [0, 1, 2]) assert.equal(context.exportBlockedReason(type, 1, 
 for (const type of [3, 4, 5]) assert.equal(context.exportBlockedReason(type, 1, false, offline, "8bit"), "");
 assert.match(context.exportBlockedReason(0, 1, false, {...ready, lutMissing: true}, "8bit"), /调色/);
 assert.equal(context.exportBlockedReason(0, 1, false, ready, "8bit"), "");
+let shownMessage = null;
+context.statusBanner.show = (...args) => { shownMessage = args; };
+context.restoringProject = true;
+context.onStatusMessage("已清除 LUT");
+assert.equal(shownMessage, null);
+context.restoringProject = false;
+context.onStatusMessage("无法读取素材");
+assert.equal(shownMessage[1], true);
+context.followExport = true;
+context.exportModal.isRunning = true;
+context.onExportFinished("/downloads/final.mp4");
+assert.equal(context.exportModal.completedPath, "/downloads/final.mp4");
+assert.equal(context.exportModal.isRunning, false);
+assert.equal(context.followExport, false);
 console.log('QML JavaScript syntax, timeline sync, project restore and cancellation checks passed');

@@ -705,7 +705,6 @@ ApplicationWindow {
         root.monitorMode = "preview"
         root.previewItem = m
         root.requestMonitorLoad(m.path, 0, true)
-        statusBanner.show("素材源片预览: " + m.filename)
     }
 
     function stopMediaPreview() {
@@ -883,14 +882,14 @@ ApplicationWindow {
                 var foundSub = false
                 for (var s = 0; s < curClip.subtitles.length; s++) {
                     var sub = curClip.subtitles[s]
-                    if (posSec >= sub.start && posSec <= sub.end) {
+                    if (String(sub.text || "").trim().toUpperCase() !== "[BLANK_AUDIO]" && posSec >= sub.start && posSec <= sub.end) {
                         root.currentSubtitleText = sub.text
                         foundSub = true
                         break
                     }
                 }
                 if (!foundSub) root.currentSubtitleText = ""
-            } else if (curClip.text) {
+            } else if (curClip.text && String(curClip.text).trim().toUpperCase() !== "[BLANK_AUDIO]") {
                 root.currentSubtitleText = curClip.text
             } else {
                 root.currentSubtitleText = ""
@@ -980,7 +979,7 @@ ApplicationWindow {
             if (root.timelineClips.length === 0) {
                 root.clearMonitor()
             }
-            statusBanner.show("成功载入 " + list.length + " 个素材 (" + root.currentSourceLabel + ")")
+            statusBanner.show("已导入 " + list.length + " 个视频")
         }
 
         function onDjiFound(path) {
@@ -995,12 +994,13 @@ ApplicationWindow {
         }
 
         function onStatusMessage(msg) {
-            statusBanner.show(msg)
+            if (root.restoringProject) return
+            statusBanner.show(msg, /失败|无法|错误|未找到|不可读|找不到|没有可导出|不支持|已导出|已写出|成功导出/.test(msg))
         }
 
         function onScanError(err) {
             root.isImporting = false
-            statusBanner.show("提示: " + err)
+            statusBanner.show(err, true)
         }
 
         function onUsbDeviceDetected(devName, mediaDir, fileCount) {
@@ -1034,7 +1034,7 @@ ApplicationWindow {
             aiModal.isPausing = false
             aiModal.progress = 0
             aiModal.statusText = message
-            statusBanner.show("筛选失败，原时间线已保留：" + message)
+            statusBanner.show("筛选失败，原时间线已保留：" + message, true)
         }
 
         function onAiFinished(tasks) {
@@ -1116,8 +1116,13 @@ ApplicationWindow {
             root.followExport = false
             exportModal.isRunning = false
             exportModal.progress = 0
-            exportModal.close()
-            statusBanner.show("导出成功: " + outPath)
+            exportModal.completedPath = outPath
+        }
+
+        function onOutputReady(outPath) {
+            toolModal.close()
+            exportModal.open()
+            exportModal.completedPath = outPath
         }
 
         function onExportFailed(err) {
@@ -1142,14 +1147,12 @@ ApplicationWindow {
             transcriptionModal.statusText = warning.length > 0
                     ? ("完成：" + segmentCount + " 段字幕。" + warning)
                     : ("转写完成，共生成 " + segmentCount + " 段字幕")
-            statusBanner.show(transcriptionModal.statusText)
         }
 
         function onTranscriptionFailed(message) {
             transcriptionModal.isRunning = false
             transcriptionModal.progress = 0
             transcriptionModal.statusText = message
-            statusBanner.show("语音转写失败：" + message)
         }
 
         function onTranscriptionCancelled() {
@@ -1176,7 +1179,6 @@ ApplicationWindow {
                 updatedClips[i] = updatedClip
             }
             root.timelineClips = updatedClips
-            statusBanner.show("口播识别完成: " + segments.length + " 段字幕 (" + videoPath.split("/").pop() + ")")
         }
     }
 
@@ -3434,24 +3436,56 @@ ApplicationWindow {
                 }
             }
         }
-    }
 
-    // 状态提示横幅
-    Rectangle {
-        id: statusBanner
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: root.isMobileMode ? 64 : 190
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: Math.min(root.width - 32, Math.max(260, bannerMetrics.advanceWidth(bannerText.text) + 36))
-        height: Math.max(36, bannerText.contentHeight + 20); radius: 18
-        color: "#f80f172a"; border.color: "#38bdf8"; border.width: 1
-        opacity: 0; visible: opacity > 0
+        Rectangle {
+            id: statusBanner
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.max(34, Math.min(72, globalStatusText.contentHeight + 12))
+            color: "#1a2230"
+            border.color: "#354257"
+            property string message: ""
+            property bool persistent: false
 
-        FontMetrics { id: bannerMetrics; font: bannerText.font }
-        Text { id: bannerText; anchors.centerIn: parent; width: parent.width - 36; wrapMode: Text.WordWrap; maximumLineCount: 5; elide: Text.ElideRight; color: "#ffffff"; font.bold: true; font.pixelSize: 12 }
-        Timer { id: bannerTimer; interval: 3500; onTriggered: bannerFadeOut.start() }
-        NumberAnimation { id: bannerFadeOut; target: statusBanner; property: "opacity"; to: 0; duration: 400 }
-        function show(msg) { bannerText.text = msg; statusBanner.opacity = 1; bannerTimer.interval = Math.min(10000, Math.max(3500, msg.length * 90)); bannerTimer.restart() }
+            function show(msg, keepVisible) {
+                if (!msg) return
+                if (persistent && message.length > 0 && !keepVisible) return
+                bannerTimer.stop()
+                message = msg
+                persistent = Boolean(keepVisible)
+                if (!persistent) {
+                    bannerTimer.interval = Math.min(15000, Math.max(8000, msg.length * 120))
+                    bannerTimer.restart()
+                }
+            }
+
+            Timer { id: bannerTimer; onTriggered: statusBanner.message = "" }
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 8
+                spacing: 8
+                Label {
+                    id: globalStatusText
+                    Layout.fillWidth: true
+                    text: statusBanner.message || "就绪"
+                    textFormat: Text.PlainText
+                    color: "#e2e8f0"
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
+                    HoverHandler { id: statusHover }
+                    ToolTip.visible: truncated && statusHover.hovered
+                    ToolTip.text: text
+                }
+                EditorButton {
+                    visible: statusBanner.message.length > 0
+                    text: "关闭"
+                    implicitHeight: 30
+                    onClicked: { bannerTimer.stop(); statusBanner.message = ""; statusBanner.persistent = false }
+                }
+            }
+        }
     }
 
     // AI 筛选模态弹窗
@@ -3474,7 +3508,7 @@ ApplicationWindow {
                 anchors.rightMargin: 12
 
                 Text {
-                    text: "AI 智能初筛参数设置"
+                    text: "AI 智能初筛"
                     color: "#f1f5f9"
                     font.bold: true
                     font.pixelSize: 13
@@ -3530,11 +3564,11 @@ ApplicationWindow {
             anchors.fill: parent; spacing: 10
 
             Text {
-                text: "选择智能剪辑模型策略："
+                text: "筛选方式"
                 color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
                 font.pixelSize: 12
             }
-            ComboBox {
+            EditorCombo {
                 id: aiModeCombo
                 Layout.fillWidth: true
                 enabled: !aiModal.isRunning
@@ -3550,7 +3584,7 @@ ApplicationWindow {
             RowLayout {
                 Layout.fillWidth: true
                 Text {
-                    text: "视频方向与成片画幅："
+                    text: "成片画面方向"
                     color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
                     font.pixelSize: 12
                 }
@@ -3563,7 +3597,7 @@ ApplicationWindow {
                     font.bold: true
                 }
             }
-            ComboBox {
+            EditorCombo {
                 id: aiCanvasCombo
                 Layout.fillWidth: true
                 enabled: !aiModal.isRunning
@@ -3582,19 +3616,19 @@ ApplicationWindow {
             }
 
             Text {
-                text: "目标成片节奏 / 期望时长："
+                text: "目标时长"
                 color: aiModal.isRunning ? "#64748b" : "#cbd5e1"
                 font.pixelSize: 12
             }
-            ComboBox {
+            EditorCombo {
                 id: targetDurationCombo
                 Layout.fillWidth: true
                 enabled: !aiModal.isRunning
                 opacity: enabled ? 1.0 : 0.45
                 model: [
-                    "标准成片节奏 (约 3 ~ 5 分钟 · 完整呈现事件叙事与精彩空镜)",
-                    "短视频快节奏 (约 1 ~ 2 分钟 · 仅提取最高光核心镜头与金句)",
-                    "宽松完整保留 (按比例保留 · 仅过滤废片与重复错句)"
+                    "标准（最多约 4 分钟）",
+                    "短视频（最多约 90 秒）",
+                    "按比例保留"
                 ]
             }
 
@@ -4126,6 +4160,8 @@ ApplicationWindow {
         property bool isStopping: false
         property bool showSettings: false
         property bool exportFailed: false
+        property string completedPath: ""
+        readonly property bool isFinished: completedPath.length > 0
         property var readiness: ({})
         readonly property bool isVideo: exportType.currentIndex === 0
         readonly property bool isProject: exportType.currentIndex === 1 || exportType.currentIndex === 2
@@ -4137,6 +4173,7 @@ ApplicationWindow {
             exportType.currentIndex = 0
             showSettings = false
             exportFailed = false
+            completedPath = ""
             statusText = ""
             progress = 0
             refreshReadiness()
@@ -4188,20 +4225,21 @@ ApplicationWindow {
                 spacing: 10
 
                 Label {
+                    visible: !exportModal.isFinished
                     text: root.timelineClips.length + " 个镜头 · " + root.formatDuration(root.totalMovieDuration)
                     color: "#cbd5e1"
                     Layout.fillWidth: true
                 }
 
                 Label {
-                    visible: !exportModal.isRunning
+                    visible: !exportModal.isRunning && !exportModal.isFinished
                     text: "导出内容"
                     color: "#f1f5f9"
                     font.bold: true
                 }
                 EditorCombo {
                     id: exportType
-                    visible: !exportModal.isRunning
+                    visible: !exportModal.isRunning && !exportModal.isFinished
                     Layout.fillWidth: true
                     enabled: !exportModal.isRunning && !bridge.busy
                     model: [
@@ -4219,7 +4257,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    visible: !exportModal.isRunning
+                    visible: !exportModal.isRunning && !exportModal.isFinished
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     color: "#cbd5e1"
@@ -4232,6 +4270,7 @@ ApplicationWindow {
                 }
 
                 RowLayout {
+                    visible: !exportModal.isFinished
                     Layout.fillWidth: true
                     Label {
                         text: "保存位置"
@@ -4257,7 +4296,7 @@ ApplicationWindow {
                 }
 
                 EditorButton {
-                    visible: !exportModal.isRunning && (exportModal.isVideo || exportModal.isProject)
+                    visible: !exportModal.isRunning && !exportModal.isFinished && (exportModal.isVideo || exportModal.isProject)
                     enabled: !exportModal.isRunning && !bridge.busy
                     Layout.fillWidth: true
                     text: exportModal.showSettings ? "收起设置" :
@@ -4268,7 +4307,7 @@ ApplicationWindow {
                 }
 
                 ColumnLayout {
-                    visible: !exportModal.isRunning && exportModal.showSettings && (exportModal.isVideo || exportModal.isProject)
+                    visible: !exportModal.isRunning && !exportModal.isFinished && exportModal.showSettings && (exportModal.isVideo || exportModal.isProject)
                     enabled: !exportModal.isRunning && !bridge.busy
                     Layout.fillWidth: true
                     spacing: 8
@@ -4316,14 +4355,14 @@ ApplicationWindow {
                 }
 
                 Label {
-                    visible: !exportModal.isRunning && exportModal.blockedReason !== ""
+                    visible: !exportModal.isRunning && !exportModal.isFinished && exportModal.blockedReason !== ""
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     color: "#fbbf24"
                     text: exportModal.blockedReason
                 }
                 EditorButton {
-                    visible: !exportModal.isRunning && !bridge.busy &&
+                    visible: !exportModal.isRunning && !exportModal.isFinished && !bridge.busy &&
                         ((exportModal.isVideo || exportModal.isProject) && !!exportModal.readiness.mediaError ||
                          exportModal.isVideo && root.targetColor === "8bit" && !!exportModal.readiness.lutMissing ||
                          !!exportModal.readiness.directoryUnavailable)
@@ -4337,7 +4376,22 @@ ApplicationWindow {
                     value: Math.max(0, Math.min(1, exportModal.progress / 100))
                 }
                 Label {
-                    visible: exportModal.statusText !== ""
+                    visible: exportModal.isFinished
+                    text: "导出完成"
+                    color: "#86efac"
+                    font.bold: true
+                    font.pixelSize: 15
+                }
+                Label {
+                    visible: exportModal.isFinished
+                    Layout.fillWidth: true
+                    wrapMode: Text.WrapAnywhere
+                    text: exportModal.completedPath
+                    color: "#cbd5e1"
+                    textFormat: Text.PlainText
+                }
+                Label {
+                    visible: exportModal.statusText !== "" && (!exportModal.isFinished || exportModal.exportFailed)
                     Layout.fillWidth: true
                     wrapMode: Text.WrapAnywhere
                     color: exportModal.exportFailed ? "#fca5a5" : "#cbd5e1"
@@ -4372,7 +4426,18 @@ ApplicationWindow {
                     }
                 }
                 EditorButton {
-                    visible: !exportModal.isRunning
+                    visible: exportModal.isFinished
+                    text: "打开文件夹"
+                    primary: true
+                    onClicked: {
+                        if (!bridge.openOutputFolder(exportModal.completedPath)) {
+                            exportModal.exportFailed = true
+                            exportModal.statusText = "无法打开文件夹，请检查导出文件是否还在原位置"
+                        }
+                    }
+                }
+                EditorButton {
+                    visible: !exportModal.isRunning && !exportModal.isFinished
                     text: ["导出视频", "导出剪映草稿", "导出工程", "导出字幕", "导出清单", "导出清单"][Math.max(0, exportType.currentIndex)]
                     enabled: !exportModal.blockedReason && !exportModal.isRunning
                     primary: true
@@ -4428,82 +4493,105 @@ ApplicationWindow {
         id: timelineTools
         anchors.centerIn: parent
         width: Math.min(480, root.width - 24)
-        height: Math.min(460, root.height - 24)
+        padding: 16
+        height: Math.min(root.height - 24, 36 + 54 + 32 + toolsBody.implicitHeight)
         modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
         header: Rectangle {
             color: "transparent"; height: 36
             Text { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "时间线粗剪"; color: "#f1f5f9"; font.bold: true; font.pixelSize: 13 }
         }
-        ColumnLayout {
-            enabled: !bridge.busy
-            anchors.fill: parent
-            anchors.margins: 16
-            spacing: 8
-            RowLayout {
-                Button { text: "保存工程…"; onClicked: projectSaveDialog.open() }
-                Button { text: "打开工程…"; onClicked: projectOpenDialog.open() }
-            }
-            TextField {
-                id: roughCutQuery
-                Layout.fillWidth: true
-                placeholderText: "按文件名或已有字幕留下，例如 猫咪 海边"
-                color: "#e2e8f0"
-                font.pixelSize: 12
-            }
-            RowLayout {
-                Layout.fillWidth: true; spacing: 6
-                Button { text: "卡点"; Layout.fillWidth: true; onClicked: musicDialog.open(); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                Button { text: "内置节奏"; Layout.fillWidth: true; onClicked: root.snapTimeline(bridge.builtinBeatTrack()); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                Button {
-                    text: "故事线"; Layout.fillWidth: true
-                    onClicked: { root.pushUndoState("按起承转合重排"); root.timelineClips = bridge.arrangeStoryline(root.timelineClips) }
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+        contentItem: ScrollView {
+            id: toolsScroll
+            clip: true
+            contentWidth: availableWidth
+            contentHeight: toolsBody.implicitHeight
+            implicitHeight: toolsBody.implicitHeight
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
+            ColumnLayout {
+                id: toolsBody
+                width: toolsScroll.availableWidth
+                height: implicitHeight
+                enabled: !bridge.busy
+                spacing: 10
+                RowLayout {
+                    EditorButton { text: "保存工程…"; onClicked: projectSaveDialog.open() }
+                    EditorButton { text: "打开工程…"; onClicked: projectOpenDialog.open() }
                 }
-            }
-            RowLayout {
-                Layout.fillWidth: true; spacing: 6
-                Button {
-                    text: "按词留下"; Layout.fillWidth: true
-                    onClicked: { root.pushUndoState("按词语粗剪"); root.timelineClips = bridge.roughCutByWords(root.timelineClips, roughCutQuery.text) }
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                TextField {
+                    id: roughCutQuery
+                    Layout.fillWidth: true
+                    placeholderText: "按文件名或字幕查找"
+                    color: "#e2e8f0"
+                    placeholderTextColor: "#94a3b8"
+                    background: Rectangle { color: "#242a39"; border.color: roughCutQuery.activeFocus ? "#7dd3fc" : "#353d50"; radius: 6 }
+                    font.pixelSize: 12
                 }
-                Button { text: "朋友圈文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("wechat"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                Button { text: "小红书文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("xhs"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-            }
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: 8
-                Button {
-                    text: "语音转写"
-                    Layout.preferredWidth: 104
-                    enabled: root.timelineClips.length > 0 && !transcriptionModal.isRunning
-                    onClicked: {
-                        transcriptionModal.progress = 0
-                        transcriptionModal.statusText = "正在准备语音识别模型…"
-                        transcriptionModal.isRunning = true
-                        transcriptionModal.open()
-                        bridge.transcribeTimeline(root.timelineClips)
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 6
+                    Button { text: "选择音乐…"; Layout.fillWidth: true; onClicked: musicDialog.open(); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "内置节奏"; Layout.fillWidth: true; onClicked: root.snapTimeline(bridge.builtinBeatTrack()); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button {
+                        text: "故事线"; Layout.fillWidth: true
+                        onClicked: { root.pushUndoState("按起承转合重排"); root.timelineClips = bridge.arrangeStoryline(root.timelineClips) }
+                        background: Rectangle { color: "#1e293b"; radius: 4 }
+                        contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
-                    background: Rectangle { color: parent.enabled ? "#075985" : "#222533"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: parent.enabled ? "#e0f2fe" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 6
+                    Button {
+                        text: "按词留下"; Layout.fillWidth: true
+                        onClicked: { root.pushUndoState("按词语粗剪"); root.timelineClips = bridge.roughCutByWords(root.timelineClips, roughCutQuery.text) }
+                        background: Rectangle { color: "#1e293b"; radius: 4 }
+                        contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                    Button { text: "朋友圈文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("wechat"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                    Button { text: "小红书文案"; Layout.fillWidth: true; onClicked: root.openSocialCopy("xhs"); background: Rectangle { color: "#1e293b"; radius: 4 } contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Button {
+                        text: "语音转写"
+                        Layout.preferredWidth: 104
+                        enabled: root.timelineClips.length > 0 && !transcriptionModal.isRunning
+                        onClicked: {
+                            transcriptionModal.progress = 0
+                            transcriptionModal.statusText = "正在准备语音识别模型…"
+                            transcriptionModal.isRunning = true
+                            transcriptionModal.open()
+                            bridge.transcribeTimeline(root.timelineClips)
+                        }
+                        background: Rectangle { color: parent.enabled ? "#075985" : "#222533"; radius: 4 }
+                        contentItem: Text { text: parent.text; color: parent.enabled ? "#e0f2fe" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "首次使用会下载约 75 MB 模型；语音在本机识别，不上传视频。"
+                        color: "#94a3b8"
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
+                    }
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: "首次使用会下载约 75 MB 模型；语音在本机识别，不上传视频。"
-                    color: "#94a3b8"
-                    font.pixelSize: 10
                     wrapMode: Text.WordWrap
+                    color: "#94a3b8"
+                    font.pixelSize: 11
+                    text: root.beatMusic ? ("当前卡点音乐: " + root.beatMusic) : "还没有卡点音乐。卡点改的是成片剪切点，导出时用这首音乐替换镜头原声。"
                 }
             }
-            Text {
-                Layout.fillWidth: true
-                wrapMode: Text.WordWrap
-                color: "#94a3b8"
-                font.pixelSize: 11
-                text: root.beatMusic ? ("当前卡点音乐: " + root.beatMusic) : "还没有卡点音乐。卡点改的是成片剪切点，导出时用这首音乐替换镜头原声。"
+        }
+        footer: Rectangle {
+            implicitHeight: 54
+            color: "#161822"
+            EditorButton {
+                anchors.right: parent.right
+                anchors.rightMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                text: "关闭"
+                onClicked: timelineTools.close()
             }
         }
     }
@@ -4513,6 +4601,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(420, root.width - 24)
         padding: 16
+        height: Math.min(root.height - 24, 36 + 32 + transcriptionBody.implicitHeight)
         modal: true
         closePolicy: Popup.NoAutoClose
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
@@ -4525,36 +4614,46 @@ ApplicationWindow {
         property string statusText: "准备就绪"
         property bool isRunning: false
         property bool isStopping: false
-        contentItem: ColumnLayout {
-            spacing: 12
-            Text {
-                Layout.fillWidth: true
-                text: "识别结果会用于播放字幕、SRT 导出、元数据和按词筛选。视频文件不会上传。"
-                color: "#94a3b8"
-                font.pixelSize: 11
-                wrapMode: Text.WordWrap
-            }
-            ProgressBar { Layout.fillWidth: true; value: transcriptionModal.progress / 100.0 }
-            Text {
-                Layout.fillWidth: true
-                text: transcriptionModal.statusText
-                color: transcriptionModal.isRunning ? "#38bdf8" : "#cbd5e1"
-                font.pixelSize: 11
-                wrapMode: Text.WordWrap
-            }
-            EditorButton {
-                Layout.alignment: Qt.AlignRight
-                text: transcriptionModal.isRunning ? "取消转写" : "关闭"
-                onClicked: {
-                    if (transcriptionModal.isRunning) {
-                        statusText = "正在停止转写…"
-                        bridge.cancelTranscription()
-                    } else {
-                        transcriptionModal.close()
-                    }
+        contentItem: ScrollView {
+            id: transcriptionScroll
+            clip: true
+            contentWidth: availableWidth
+            contentHeight: transcriptionBody.implicitHeight
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
+            ColumnLayout {
+                id: transcriptionBody
+                width: transcriptionScroll.availableWidth
+                height: implicitHeight
+                spacing: 12
+                Text {
+                    Layout.fillWidth: true
+                    text: "识别结果会用于播放字幕、SRT 导出、元数据和按词筛选。视频文件不会上传。"
+                    color: "#94a3b8"
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
                 }
-                background: Rectangle { color: transcriptionModal.isRunning ? "#7f1d1d" : "#334155"; radius: 4 }
-                contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                ProgressBar { Layout.fillWidth: true; value: transcriptionModal.progress / 100.0 }
+                Text {
+                    Layout.fillWidth: true
+                    text: transcriptionModal.statusText
+                    color: transcriptionModal.isRunning ? "#38bdf8" : "#cbd5e1"
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+                EditorButton {
+                    Layout.alignment: Qt.AlignRight
+                    text: transcriptionModal.isRunning ? "取消转写" : "关闭"
+                    onClicked: {
+                        if (transcriptionModal.isRunning) {
+                            transcriptionModal.statusText = "正在停止转写…"
+                            bridge.cancelTranscription()
+                        } else {
+                            transcriptionModal.close()
+                        }
+                    }
+                    background: Rectangle { color: transcriptionModal.isRunning ? "#7f1d1d" : "#334155"; radius: 4 }
+                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                }
             }
         }
     }
@@ -4589,6 +4688,11 @@ ApplicationWindow {
                 onClicked: { bridge.copyText(socialBody.text); statusBanner.show("文案已复制") }
                 background: Rectangle { color: "#2563eb"; radius: 4 }
                 contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+            }
+            EditorButton {
+                text: "关闭"
+                Layout.alignment: Qt.AlignRight
+                onClicked: socialDialog.close()
             }
         }
     }

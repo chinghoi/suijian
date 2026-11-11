@@ -52,6 +52,7 @@ public slots:
     void safeEjectDevice();
     QVariantMap exportReadiness(const QVariantList &clips) const;
     QUrl localMediaUrl(const QString &path) const { return QUrl::fromLocalFile(path); }
+    bool openOutputFolder(const QString &path) const;
     QString exportDirectory() const;
     QUrl exportDirectoryUrl() const;
     bool setExportDirectory(const QUrl &folder);
@@ -101,6 +102,7 @@ signals:
     void usbDeviceRemoved(const QString &deviceName);
     void exportProgress(double percent, const QString &stepText);
     void exportFinished(const QString &outputPath);
+    void outputReady(const QString &outputPath);
     void exportFailed(const QString &errorMessage);
 
 private:
@@ -108,7 +110,7 @@ private:
     bool beginTool();
     void endTool();
     void exportProjectExtras(const QVariantList &clips, const QString &canvas, const QString &base);
-    void writeSrt(const QVariantList &clips, const QString &outputPath);
+    QString writeSrt(const QVariantList &clips, const QString &outputPath);
     QString exportMediaError(const QVariantList &clips) const;
     QVariantMap probeFile(const QString &filepath);
     QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr, double duration = 0, const std::function<void(double)> &onProgress = {});
