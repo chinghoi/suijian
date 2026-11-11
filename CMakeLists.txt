@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(DJIEditor LANGUAGES CXX)
 
+if (APPLE)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -95,7 +99,6 @@ if (BUILD_TESTING)
 endif()
 
 if (APPLE)
-    enable_language(OBJCXX)
     target_sources(DJIEditor PRIVATE src/MacWindowStyle.mm)
     target_link_libraries(DJIEditor PRIVATE "-framework AppKit")
     set_target_properties(DJIEditor PROPERTIES

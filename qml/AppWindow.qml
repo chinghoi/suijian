@@ -2300,7 +2300,7 @@ ApplicationWindow {
                         ColumnLayout {
                             anchors.centerIn: parent; spacing: 2
                             Text { Layout.alignment: Qt.AlignHCenter; text: "素材"; color: parent.checked ? "#38bdf8" : "#94a3b8"; font.pixelSize: 12 }
-                            Text { Layout.alignment: Qt.AlignHCenter; text: "素材池 (" + root.getSelectedCount() + ")"; color: root.mobileTab === 1 ? "#38bdf8" : "#94a3b8"; font.pixelSize: 10; font.bold: true }
+                            Text { Layout.alignment: Qt.AlignHCenter; text: root.mediaPool.length + " 个素材"; color: root.mobileTab === 1 ? "#38bdf8" : "#94a3b8"; font.pixelSize: 10; font.bold: true }
                         }
                         MouseArea { anchors.fill: parent; onClicked: root.mobileTab = 1 }
                     }
