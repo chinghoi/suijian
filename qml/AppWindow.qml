@@ -882,14 +882,14 @@ ApplicationWindow {
                 var foundSub = false
                 for (var s = 0; s < curClip.subtitles.length; s++) {
                     var sub = curClip.subtitles[s]
-                    if (posSec >= sub.start && posSec <= sub.end) {
+                    if (String(sub.text || "").trim().toUpperCase() !== "[BLANK_AUDIO]" && posSec >= sub.start && posSec <= sub.end) {
                         root.currentSubtitleText = sub.text
                         foundSub = true
                         break
                     }
                 }
                 if (!foundSub) root.currentSubtitleText = ""
-            } else if (curClip.text) {
+            } else if (curClip.text && String(curClip.text).trim().toUpperCase() !== "[BLANK_AUDIO]") {
                 root.currentSubtitleText = curClip.text
             } else {
                 root.currentSubtitleText = ""
