@@ -4494,7 +4494,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(480, root.width - 24)
         padding: 16
-        height: Math.min(implicitHeight, root.height - 24)
+        height: Math.min(root.height - 24, 36 + 54 + 32 + toolsBody.implicitHeight)
         modal: true
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
         header: Rectangle {
@@ -4505,10 +4505,13 @@ ApplicationWindow {
             id: toolsScroll
             clip: true
             contentWidth: availableWidth
+            contentHeight: toolsBody.implicitHeight
             implicitHeight: toolsBody.implicitHeight
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
             ColumnLayout {
                 id: toolsBody
                 width: toolsScroll.availableWidth
+                height: implicitHeight
                 enabled: !bridge.busy
                 spacing: 10
                 RowLayout {
@@ -4615,9 +4618,12 @@ ApplicationWindow {
             id: transcriptionScroll
             clip: true
             contentWidth: availableWidth
+            contentHeight: transcriptionBody.implicitHeight
+            ScrollBar.vertical.policy: ScrollBar.AsNeeded
             ColumnLayout {
                 id: transcriptionBody
                 width: transcriptionScroll.availableWidth
+                height: implicitHeight
                 spacing: 12
                 Text {
                     Layout.fillWidth: true
