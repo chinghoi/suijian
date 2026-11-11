@@ -4515,6 +4515,7 @@ ApplicationWindow {
         id: transcriptionModal
         anchors.centerIn: parent
         width: Math.min(420, root.width - 24)
+        padding: 16
         modal: true
         closePolicy: Popup.NoAutoClose
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
@@ -4527,9 +4528,7 @@ ApplicationWindow {
         property string statusText: "准备就绪"
         property bool isRunning: false
         property bool isStopping: false
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: 16
+        contentItem: ColumnLayout {
             spacing: 12
             Text {
                 Layout.fillWidth: true
@@ -4546,7 +4545,7 @@ ApplicationWindow {
                 font.pixelSize: 11
                 wrapMode: Text.WordWrap
             }
-            Button {
+            EditorButton {
                 Layout.alignment: Qt.AlignRight
                 text: transcriptionModal.isRunning ? "取消转写" : "关闭"
                 onClicked: {

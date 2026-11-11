@@ -702,6 +702,7 @@ void MediaEngine::transcribeTimeline(const QVariantList &clips) {
         SpeechTranscriber transcriber;
         int successfulFiles = 0;
         int totalSegments = 0;
+        int silentFiles = 0;
         QStringList errors;
         int fileIndex = 0;
         const int fileCount = sources.size();
@@ -713,6 +714,29 @@ void MediaEngine::transcribeTimeline(const QVariantList &clips) {
             const double span = 92.0 / fileCount;
             QVariantList segments;
             QString fileError;
+            QProcess audioProbe;
+            audioProbe.start("ffprobe", {"-v", "error", "-select_streams", "a:0",
+                                        "-show_entries", "stream=index", "-of", "csv=p=0", path});
+            if (!audioProbe.waitForStarted(5000)) {
+                errors.append(QFileInfo(path).fileName() + ": 无法启动音轨检查");
+                continue;
+            }
+            while (!audioProbe.waitForFinished(100) && audioProbe.state() != QProcess::NotRunning) {
+                if (m_transcriptionCancelled) {
+                    audioProbe.kill();
+                    audioProbe.waitForFinished();
+                    break;
+                }
+            }
+            if (m_transcriptionCancelled) break;
+            if (audioProbe.exitStatus() != QProcess::NormalExit || audioProbe.exitCode() != 0) {
+                errors.append(QFileInfo(path).fileName() + ": 无法读取音轨");
+                continue;
+            }
+            if (audioProbe.readAllStandardOutput().trimmed().isEmpty()) {
+                ++silentFiles;
+                continue;
+            }
             const bool ok = transcriber.transcribeFile(path, duration, modelPath,
                 [this] { return m_transcriptionCancelled.load(); },
                 [&](double localPercent, const QString &text) {
@@ -739,10 +763,16 @@ void MediaEngine::transcribeTimeline(const QVariantList &clips) {
         if (m_transcriptionCancelled) {
             QMetaObject::invokeMethod(this, [this]() { emit transcriptionCancelled(); }, Qt::QueuedConnection);
         } else if (successfulFiles == 0) {
-            const QString summary = errors.isEmpty() ? QStringLiteral("没有素材完成转写") : errors.join("\n");
+            const QString summary = errors.isEmpty() && silentFiles
+                ? QStringLiteral("所选素材没有音轨，无法生成字幕")
+                : errors.isEmpty() ? QStringLiteral("没有素材完成转写") : errors.join("\n");
             QMetaObject::invokeMethod(this, [this, summary]() { emit transcriptionFailed(summary); }, Qt::QueuedConnection);
         } else {
             QString warning = errors.join("；");
+            if (silentFiles) {
+                if (!warning.isEmpty()) warning += "；";
+                warning += QString("已跳过 %1 个无音轨素材").arg(silentFiles);
+            }
             if (totalSegments == 0 && warning.isEmpty()) warning = QStringLiteral("未识别到语音；不会生成空字幕文件");
             QMetaObject::invokeMethod(this, [this, totalSegments, warning]() {
                 emit transcriptionProgress(100.0, QString("转写完成，共识别 %1 段语音").arg(totalSegments));
