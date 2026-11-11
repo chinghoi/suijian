@@ -121,7 +121,7 @@ private:
 
     QString m_activeDeviceRoot;
     QStringList m_knownFiles;
-    QSet<QString> m_seenDevices;
+    QHash<QString, QString> m_seenDevices;
     bool m_isDeviceOnline = true;
     QTimer *m_heartbeatTimer = nullptr;
 

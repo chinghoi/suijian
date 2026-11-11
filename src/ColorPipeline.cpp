@@ -46,21 +46,23 @@ color::SdrConversion color::toSdr(const QJsonObject &stream, bool hasToneMapping
     // Newer zimg rejects linear YUV and an unspecified chroma location.
     // Tag the frame first, then convert to linear RGB. Keep a stated chroma
     // location; do not invent one.
-    QString params = QString("setparams=color_primaries=bt2020:color_trc=%1:colorspace=bt2020nc:range=%2")
+    const QString params = QString("setparams=color_primaries=bt2020:color_trc=%1:colorspace=bt2020nc:range=%2")
         .arg(transfer, range);
     const QString chroma = stream.value("chroma_location").toString();
+    QString chromaOption;
     if (chroma == "left" || chroma == "center" || chroma == "topleft"
         || chroma == "top" || chroma == "bottomleft" || chroma == "bottom") {
-        params += ":chroma_location=" + chroma;
+        chromaOption = ":chromalin=" + chroma;
     }
     const QString filter = QString(
-        "%1,zscale=rin=%2:t=linear:npl=100:m=gbr,"
+        "%1,zscale=rin=%2:t=linear:npl=100:m=gbr%4,"
         "format=gbrpf32le,zscale=p=bt709,"
         "tonemap=tonemap=mobius:param=0.3:desat=2:peak=%3,"
         "zscale=t=bt709:m=bt709:r=limited:dither=error_diffusion,format=yuv420p,"
         "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,"
         "sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL")
         .arg(params, range == "pc" ? "full" : "limited")
-        .arg(peakNits / 100.0, 0, 'g', 8);
+        .arg(peakNits / 100.0, 0, 'g', 8)
+        .arg(chromaOption);
     return {filter, {}, true};
 }

@@ -38,6 +38,7 @@ int main(int argc, char **argv) {
     hdr["color_range"] = "pc";
     require(color::toSdr(hdr, true).filter.contains("rin=full:"), "full range was not respected");
     hdr["color_range"] = "tv";
+    hdr["chroma_location"] = "left";
 
     // Real FFmpeg regression on neutral HDR ramps: tags, depth, monotonicity
     // and useful output range. This checks transforms rather than just strings.
@@ -51,6 +52,9 @@ int main(int argc, char **argv) {
         hdr["color_transfer"] = transfer;
         const auto conversion = color::toSdr(hdr, true);
         require(conversion.error.isEmpty() && conversion.toneMapped, "tagged HDR was not converted");
+        require(conversion.filter.contains("chromalin=left")
+                && !conversion.filter.contains("range=tv:chroma_location"),
+                "chroma location must use the zscale option supported by FFmpeg 6");
         run("ffmpeg", {"-v","error","-y","-i",source,"-vf",conversion.filter,
             "-c:v","ffv1","-color_primaries","bt709","-color_trc","bt709",
             "-colorspace","bt709","-color_range","tv",output});
@@ -64,6 +68,16 @@ int main(int argc, char **argv) {
         const auto *values = reinterpret_cast<const unsigned char *>(frame.constData());
         require(values[0] < 5 && values[127] > 180, "tone-mapped ramp has no useful dynamic range");
         for (int x=1; x<128; ++x) require(values[x]+2 >= values[x-1], "neutral ramp is not monotonic");
+
+        const auto composed = directory.path()+"/"+transfer+"-composed.mkv";
+        const QString graph = QString("[0:v]%1,split=2[fgin][bgin];"
+            "[bgin]scale=160:90:force_original_aspect_ratio=increase,crop=160:90,"
+            "boxblur=8:2,scale=320:180:flags=fast_bilinear,"
+            "eq=brightness=-0.08:saturation=1.15[bg];"
+            "[fgin]scale=320:180:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2:format=yuv420,setsar=1[outv]").arg(conversion.filter);
+        run("ffmpeg", {"-v","error","-y","-i",source,"-filter_complex",graph,
+            "-map","[outv]","-c:v","ffv1",composed});
     }
     qInfo() << "HDR to SDR conversion checks passed";
 }

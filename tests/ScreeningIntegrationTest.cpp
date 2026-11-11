@@ -17,6 +17,30 @@
 static void require(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
 static QVariantList screen(const QString &path, const QString &mode, bool expectError = false) {
     MediaEngine engine;
+    const QString cardDir = temp.filePath("CARD/DCIM/100MEDIA");
+    require(QDir().mkpath(cardDir), "failed to create nested camera directory");
+    require(QFile::copy(detailed, cardDir + "/nested.mp4"), "failed to create nested video");
+    QFile proxy(cardDir + "/nested.LRV");
+    require(proxy.open(QIODevice::WriteOnly), "failed to create proxy fixture");
+    proxy.write("proxy");
+    proxy.close();
+    QVariantList imported;
+    QStringList recent;
+    QEventLoop importLoop;
+    QObject::connect(&engine, &MediaEngine::mediaLoaded, &importLoop,
+        [&](const QStringList &, const QVariantList &items, const QString &) { imported = items; importLoop.quit(); });
+    QObject::connect(&engine, &MediaEngine::recentDirsLoaded, &importLoop,
+        [&](const QStringList &paths) { recent = paths; });
+    QTimer::singleShot(30000, &importLoop, &QEventLoop::quit);
+    const QString dcim = temp.filePath("CARD/DCIM");
+    engine.importPaths({dcim});
+    importLoop.exec();
+    require(imported.size() == 1 && imported.first().toMap().value("filename").toString() == "nested.mp4",
+            "nested camera video missing or proxy imported");
+    require(recent.contains(dcim), "successful import did not add recent directory");
+    recent.clear();
+    engine.loadRecentDirs();
+    require(recent.contains(dcim), "recent directory was not persisted");
     QEventLoop loop;
     bool completed = false, failed = false;
     QVariantList result;

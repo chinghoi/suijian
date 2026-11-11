@@ -1005,7 +1005,8 @@ ApplicationWindow {
 
         function onUsbDeviceDetected(devName, mediaDir, fileCount) {
             if (root.mediaPool.length === 0) {
-                statusBanner.show("已自动识别并载入相机外设 [" + devName + "] (" + fileCount + " 个视频)")
+                root.detectedDjiPath = mediaDir
+                statusBanner.show("检测到相机设备 [" + devName + "]，可一键导入 " + fileCount + " 个视频")
             } else {
                 root.pendingUsbDevice = { name: devName, dir: mediaDir, count: fileCount }
                 usbNewDeviceDialog.open()
@@ -1013,6 +1014,7 @@ ApplicationWindow {
         }
 
         function onUsbDeviceRemoved(devName) {
+            bridge.detectDji()
             statusBanner.show("设备 [" + devName + "] 已从系统移除")
         }
 

@@ -4,6 +4,8 @@
 #include "SpeechTranscriber.h"
 #include "EditingAlgorithms.h"
 #include <QDir>
+#include <QDirIterator>
+#include <QStorageInfo>
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QSettings>
@@ -72,42 +74,51 @@ MediaEngine::~MediaEngine() {
     }
 }
 
-void MediaEngine::detectDji() {
-    QStringList candidates;
-#if defined(Q_OS_MAC)
-    QDir volumesDir("/Volumes");
-    for (const auto &entry : volumesDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        QString dcim = entry.absoluteFilePath() + "/DCIM";
-        if (QDir(dcim).exists()) {
-            QDir d(dcim);
-            for (const auto &sub : d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-                candidates.append(sub.absoluteFilePath());
-            }
-        }
-    }
-#elif defined(Q_OS_WIN)
-    for (char drive = 'D'; drive <= 'Z'; ++drive) {
-        QString root = QString("%1:/DCIM").arg(drive);
-        if (QDir(root).exists()) {
-            candidates.append(root);
-        }
-    }
-#else
-    QDir mediaDir("/media");
-    if (mediaDir.exists()) {
-        candidates.append("/media");
-    }
-#endif
+namespace {
+struct CameraDirectory {
+    QString root;
+    QString name;
+    QString directory;
+    int count;
+};
 
-    for (const auto &cand : candidates) {
-        QDir d(cand);
-        QStringList filters = {"*.MP4", "*.mp4", "*.MOV", "*.mov"};
-        if (!d.entryList(filters, QDir::Files).isEmpty()) {
-            emit djiFound(cand);
-            return;
-        }
+QStringList videoFiles(const QString &directory) {
+    QStringList files;
+    QDirIterator it(directory, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        const QString suffix = it.fileInfo().suffix().toLower();
+        if (suffix == "mp4" || suffix == "mov" || suffix == "mkv" || suffix == "m4v")
+            files.append(path);
     }
-    emit djiFound("");
+    files.sort();
+    return files;
+}
+
+QList<CameraDirectory> cameraDirectories(const QHash<QString, QString> &seen = {}) {
+    QList<CameraDirectory> cameras;
+    for (const auto &volume : QStorageInfo::mountedVolumes()) {
+        if (!volume.isValid() || !volume.isReady()) continue;
+        const QString root = volume.rootPath();
+        const QString dcim = QDir(root).filePath("DCIM");
+        if (!QDir(dcim).exists()) continue;
+        int count = 0;
+        if (!seen.contains(root)) {
+            count = videoFiles(dcim).size();
+            if (!count) continue;
+        }
+        QString name = volume.displayName();
+        if (name.isEmpty()) name = QDir(root).dirName();
+        if (name.isEmpty()) name = root;
+        cameras.append({root, name, dcim, count});
+    }
+    return cameras;
+}
+}
+
+void MediaEngine::detectDji() {
+    const auto cameras = cameraDirectories();
+    emit djiFound(cameras.isEmpty() ? QString() : cameras.first().directory);
 }
 
 void MediaEngine::loadRecentDirs() {
@@ -248,11 +259,12 @@ void MediaEngine::importPaths(const QStringList &paths) {
 
             if (fi.isDir()) {
                 if (dirForRecent.isEmpty()) dirForRecent = fi.absoluteFilePath();
-                QDir dir(fi.absoluteFilePath());
-                for (const auto &entry : dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot)) {
-                    if (validExts.contains("." + entry.suffix().toLower())) {
-                        files.append(entry.absoluteFilePath());
-                    }
+                QDirIterator it(fi.absoluteFilePath(), QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+                while (it.hasNext()) {
+                    if (m_toolCancelled) return;
+                    const QString entry = it.next();
+                    if (validExts.contains("." + it.fileInfo().suffix().toLower()))
+                        files.append(entry);
                 }
             } else if (fi.isFile()) {
                 if (validExts.contains("." + fi.suffix().toLower())) {
@@ -263,6 +275,7 @@ void MediaEngine::importPaths(const QStringList &paths) {
         }
 
         files.removeDuplicates();
+        files.sort();
         if (files.isEmpty()) {
             QMetaObject::invokeMethod(this, [this]() {
                 emit scanError("未找到有效视频文件（支持 .MP4 / .MOV）");
@@ -298,35 +311,43 @@ void MediaEngine::importPaths(const QStringList &paths) {
         std::sort(dates.begin(), dates.end(), std::greater<QString>());
         QString sourceLabel = dirForRecent.isEmpty() ? QString("%1 个视频文件").arg(files.size()) : dirForRecent;
 
-        QMetaObject::invokeMethod(this, [this, dates, mediaList, sourceLabel]() {
+        QMetaObject::invokeMethod(this, [this, dates, mediaList, sourceLabel, dirForRecent]() {
+            if (!mediaList.isEmpty() && !dirForRecent.isEmpty()) {
+                const QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+                QDir().mkpath(cacheDir);
+                const QString recentPath = cacheDir + "/dji_editor_recent.json";
+                QStringList recent{dirForRecent};
+                QFile oldFile(recentPath);
+                if (oldFile.open(QIODevice::ReadOnly)) {
+                    for (const auto &value : QJsonDocument::fromJson(oldFile.readAll()).array()) {
+                        const QString path = value.toString();
+                        if (!path.isEmpty() && !recent.contains(path) && recent.size() < 10)
+                            recent.append(path);
+                    }
+                }
+                QJsonArray entries;
+                for (const auto &path : recent) entries.append(path);
+                QSaveFile recentFile(recentPath);
+                const QByteArray data = QJsonDocument(entries).toJson();
+                if (recentFile.open(QIODevice::WriteOnly) && recentFile.write(data) == data.size() && recentFile.commit())
+                    emit recentDirsLoaded(recent);
+            }
             emit mediaLoaded(dates, mediaList, sourceLabel);
         });
     });
 }
 
 void MediaEngine::checkDeviceHeartbeat() {
-#if defined(Q_OS_MAC)
-    QDir volumesDir("/Volumes");
-    QSet<QString> detectedDevices;
-    for (const auto &entry : volumesDir.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-        QString b = entry.fileName();
-        if (b == "Macintosh HD" || b == "Recovery" || b == "Preboot" || b == "VM") continue;
-        QString dcim = entry.absoluteFilePath() + "/DCIM";
-        if (QDir(dcim).exists()) {
-            QDir d(dcim);
-            for (const auto &sub : d.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-                QStringList vids = QDir(sub.absoluteFilePath()).entryList(QStringList() << "*.MP4" << "*.mp4" << "*.MOV" << "*.mov", QDir::Files);
-                if (!vids.isEmpty()) {
-                    detectedDevices.insert(b);
-                    if (!m_seenDevices.contains(b)) emit usbDeviceDetected(b, sub.absoluteFilePath(), vids.size());
-                    break;
-                }
-            }
-        }
+    QHash<QString, QString> detectedDevices;
+    for (const auto &camera : cameraDirectories(m_seenDevices)) {
+        detectedDevices.insert(camera.root, camera.name);
+        if (!m_seenDevices.contains(camera.root))
+            emit usbDeviceDetected(camera.name, camera.directory, camera.count);
     }
-    for (const auto &name : m_seenDevices - detectedDevices) emit usbDeviceRemoved(name);
+    for (auto it = m_seenDevices.cbegin(); it != m_seenDevices.cend(); ++it) {
+        if (!detectedDevices.contains(it.key())) emit usbDeviceRemoved(it.value());
+    }
     m_seenDevices = detectedDevices;
-#endif
 
     if (m_activeDeviceRoot.isEmpty()) return;
     QDir d(m_activeDeviceRoot);
@@ -344,8 +365,8 @@ void MediaEngine::checkDeviceHeartbeat() {
             if (!QFileInfo::exists(path)) missing.append(QVariantMap{{"path", path}});
         }
         int newCount = 0;
-        for (const auto &entry : d.entryInfoList({"*.MP4", "*.mp4", "*.MOV", "*.mov", "*.mkv", "*.m4v"}, QDir::Files)) {
-            if (!m_knownFiles.contains(entry.absoluteFilePath())) ++newCount;
+        for (const auto &path : videoFiles(m_activeDeviceRoot)) {
+            if (!m_knownFiles.contains(path)) ++newCount;
         }
         diff["missing"] = missing;
         diff["new_count"] = newCount;
@@ -1252,7 +1273,7 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
                      << "-pix_fmt" << "yuv420p10le" << "-profile:v" << "main10" << "-color_primaries" << "bt2020" << "-color_trc" << "arib-std-b67" << "-colorspace" << "bt2020nc";
             }
 #endif
-            if (!colorFilter.isEmpty()) {
+            if (targetColor == "8bit") {
                 args << "-color_primaries" << "bt709" << "-color_trc" << "bt709"
                      << "-colorspace" << "bt709" << "-color_range" << "tv";
             }
