@@ -328,7 +328,7 @@ bool SpeechTranscriber::transcribeFile(const QString &videoPath,
         for (int i = 0; i < whisper_full_n_segments(m_context); ++i) {
             const char *rawText = whisper_full_get_segment_text(m_context, i);
             const QString text = QString::fromUtf8(rawText ? rawText : "").simplified();
-            if (text.isEmpty()) continue;
+            if (text.isEmpty() || text.compare(QStringLiteral("[BLANK_AUDIO]"), Qt::CaseInsensitive) == 0) continue;
             const double start = chunkOffset + whisper_full_get_segment_t0(m_context, i) * 0.01;
             const double end = chunkOffset + whisper_full_get_segment_t1(m_context, i) * 0.01;
             if (end <= start) continue;
