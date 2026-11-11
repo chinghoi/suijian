@@ -40,6 +40,7 @@ qt_add_qml_module(DJIEditor
     VERSION 1.0
     QML_FILES
         qml/AppWindow.qml
+        qml/TextBadge.qml
 )
 
 target_link_libraries(DJIEditor PRIVATE
@@ -54,6 +55,11 @@ target_link_libraries(DJIEditor PRIVATE
 
 include(CTest)
 if (BUILD_TESTING)
+    add_executable(text_badge_test tests/TextBadgeTest.cpp)
+    target_link_libraries(text_badge_test PRIVATE Qt6::Quick)
+    add_test(NAME text_badge COMMAND text_badge_test "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    set_tests_properties(text_badge PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software" TIMEOUT 15)
     find_program(NODE_EXECUTABLE node)
     if (NODE_EXECUTABLE)
         add_test(NAME qml_logic COMMAND ${NODE_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/QmlLogicTest.cjs)

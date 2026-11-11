@@ -65,4 +65,14 @@ assert.equal(context.canvasChoice, 'vertical'); assert.equal(context.beatMusic, 
 context.aiModal.isRunning = true; context.aiModal.isStopping = true;
 context.onAiCancelled();
 assert.equal(context.aiModal.isRunning, false); assert.equal(context.aiModal.isStopping, false);
+const ready = {mediaError: "", hasSubtitles: true, directoryUnavailable: false, lutMissing: false};
+assert.match(context.exportBlockedReason(0, 0, false, ready, "8bit"), /时间线/);
+assert.match(context.exportBlockedReason(4, 1, true, ready, "8bit"), /任务/);
+assert.match(context.exportBlockedReason(3, 1, false, {...ready, hasSubtitles: false}, "8bit"), /语音转写/);
+assert.match(context.exportBlockedReason(4, 1, false, {...ready, directoryUnavailable: true}, "8bit"), /文件夹/);
+const offline = {...ready, mediaError: "找不到素材"};
+for (const type of [0, 1, 2]) assert.equal(context.exportBlockedReason(type, 1, false, offline, "8bit"), "找不到素材");
+for (const type of [3, 4, 5]) assert.equal(context.exportBlockedReason(type, 1, false, offline, "8bit"), "");
+assert.match(context.exportBlockedReason(0, 1, false, {...ready, lutMissing: true}, "8bit"), /调色/);
+assert.equal(context.exportBlockedReason(0, 1, false, ready, "8bit"), "");
 console.log('QML JavaScript syntax, timeline sync, project restore and cancellation checks passed');

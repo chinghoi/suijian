@@ -8,6 +8,7 @@
 #include <QThread>
 #include <QProcess>
 #include <QTimer>
+#include <QUrl>
 #include <QSet>
 #include <QHash>
 #include <QJsonObject>
@@ -20,6 +21,7 @@
 class MediaEngine : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    Q_PROPERTY(QString exportDirectory READ exportDirectory NOTIFY exportDirectoryChanged)
 
 public:
     explicit MediaEngine(QObject *parent = nullptr);
@@ -48,6 +50,10 @@ public slots:
     void transcribeTimeline(const QVariantList &clips);
     void cancelTranscription();
     void safeEjectDevice();
+    QVariantMap exportReadiness(const QVariantList &clips) const;
+    QString exportDirectory() const;
+    QUrl exportDirectoryUrl() const;
+    bool setExportDirectory(const QUrl &folder);
     void startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor);
     void generateSrt(const QVariantList &clips, const QString &outputPath);
     void exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath);
@@ -64,6 +70,7 @@ public slots:
     QString beatMusic() const;
 
 signals:
+    void exportDirectoryChanged();
     void busyChanged();
     void aiCancelled();
     void exportCancelled();
@@ -100,6 +107,8 @@ private:
     bool beginTool();
     void endTool();
     void exportProjectExtras(const QVariantList &clips, const QString &canvas, const QString &base);
+    void writeSrt(const QVariantList &clips, const QString &outputPath);
+    QString exportMediaError(const QVariantList &clips) const;
     QVariantMap probeFile(const QString &filepath);
     QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr, double duration = 0, const std::function<void(double)> &onProgress = {});
     QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error, const std::function<void(double)> &onProgress = {});

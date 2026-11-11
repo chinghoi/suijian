@@ -5,6 +5,8 @@
 #include <QStandardPaths>
 #include <QDebug>
 #include <QFile>
+#include <QDir>
+#include <QSettings>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -35,6 +37,9 @@ int main(int argc, char **argv) {
     QStandardPaths::setTestModeEnabled(true);
     QTemporaryDir temp;
     require(temp.isValid(), "temporary directory failed");
+    app.setOrganizationName("SuiJianTests");
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temp.path());
     auto make = [&](QString name, QString video, bool audio) {
         QString path = temp.path()+"/"+name+".mp4";
         QStringList args{"-v","error","-y","-f","lavfi","-i",video};
@@ -81,6 +86,28 @@ int main(int argc, char **argv) {
     const QString srtPath = temp.path()+"/captions.srt";
     QVariantMap captionedClip = firstClip;
     captionedClip["text"] = "A quote, and\nline";
+    const QString destination = temp.filePath("Export results");
+    require(QDir().mkpath(destination), "cannot create export fixture directory");
+    require(engine.setExportDirectory(QUrl::fromLocalFile(destination)), "export directory selection failed");
+    require(MediaEngine().exportDirectory() == destination, "export directory preference was not restored");
+    require(!engine.setExportDirectory(QUrl::fromLocalFile(temp.filePath("missing directory"))),
+            "missing directory accepted as export destination");
+    const auto readiness = engine.exportReadiness({captionedClip});
+    require(readiness.value("hasSubtitles").toBool() && readiness.value("mediaError").toString().isEmpty()
+        && !readiness.value("directoryUnavailable").toBool(), "valid export incorrectly blocked");
+    require(!engine.exportReadiness({firstClip}).value("hasSubtitles").toBool(), "missing subtitles not detected");
+    QVariantMap offlineClip = captionedClip;
+    offlineClip["src"] = temp.filePath("offline.mp4");
+    const auto offline = engine.exportReadiness({offlineClip});
+    require(!offline.value("mediaError").toString().isEmpty() && offline.value("hasSubtitles").toBool(),
+            "offline source did not preserve existing subtitles");
+    engine.exportMetadata({}, "csv", "");
+    require(QDir(destination).entryList(QDir::Files).isEmpty(), "empty timeline wrote metadata");
+    engine.exportMetadata({offlineClip}, "csv", "");
+    engine.generateSrt({offlineClip}, "");
+    require(QDir(destination).entryList(QStringList{"*.csv"}, QDir::Files).size() == 1
+        && QDir(destination).entryList(QStringList{"*.srt"}, QDir::Files).size() == 1,
+        "metadata or subtitle export ignored selected directory");
     engine.generateSrt({captionedClip}, srtPath);
     QFile srt(srtPath);
     require(srt.open(QIODevice::ReadOnly), "SRT with transcript was not created");

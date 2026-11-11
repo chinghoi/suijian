@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QSettings>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -983,6 +984,79 @@ void MediaEngine::startAiScreening(const QVariantList &mediaPool, const QStringL
     });
 }
 
+static bool readableExportFile(const QString &path) {
+    const QFileInfo file(path);
+    return file.isFile() && file.isReadable();
+}
+
+static bool writableExportDirectory(const QString &path) {
+    const QFileInfo folder(path);
+    return folder.isDir() && folder.isWritable();
+}
+
+QString MediaEngine::exportDirectory() const {
+    const QString saved = QSettings().value("export/directory").toString();
+    if (!saved.isEmpty()) return saved;
+    const QString downloads = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    return writableExportDirectory(downloads) ? downloads : QDir::homePath();
+}
+
+QUrl MediaEngine::exportDirectoryUrl() const {
+    return QUrl::fromLocalFile(exportDirectory());
+}
+
+bool MediaEngine::setExportDirectory(const QUrl &folder) {
+    if (busy()) return false;
+    const QString path = folder.toLocalFile();
+    if (!writableExportDirectory(path)) {
+        return false;
+    }
+    QSettings settings;
+    settings.setValue("export/directory", QDir::cleanPath(path));
+    emit exportDirectoryChanged();
+    return true;
+}
+
+QString MediaEngine::exportMediaError(const QVariantList &clips) const {
+    if (clips.isEmpty()) return "请先把镜头加入时间线";
+    QSet<QString> checked;
+    for (const QVariant &item : clips) {
+        const auto clip = item.toMap();
+        const QString path = clip.value("src").toString();
+        if (checked.contains(path)) continue;
+        if (!readableExportFile(path)) {
+            const QString name = clip.value("filename", QFileInfo(path).fileName()).toString();
+            return name.isEmpty() ? QStringLiteral("时间线中的素材无法读取，请重新导入")
+                                  : QString("找不到素材「%1」，请连接原素材所在的设备或重新导入").arg(name);
+        }
+        checked.insert(path);
+    }
+    if (!m_beatMusic.isEmpty() && !readableExportFile(m_beatMusic))
+        return "找不到配乐，请恢复原文件或重新选择配乐";
+    return {};
+}
+
+QVariantMap MediaEngine::exportReadiness(const QVariantList &clips) const {
+    bool hasSubtitles = false;
+    for (const QVariant &item : clips) {
+        const auto clip = item.toMap();
+        const double start = clip.value("start").toDouble();
+        const double end = start + clip.value("dur").toDouble();
+        for (const QVariant &cue : transcriptSegmentsForClip(clip)) {
+            const auto segment = cue.toMap();
+            if (!segment.value("text").toString().trimmed().isEmpty()
+                && std::min(end, segment.value("end").toDouble()) > std::max(start, segment.value("start").toDouble())) {
+                hasSubtitles = true;
+                break;
+            }
+        }
+        if (hasSubtitles) break;
+    }
+    return {{"mediaError", exportMediaError(clips)}, {"hasSubtitles", hasSubtitles},
+            {"directoryUnavailable", !writableExportDirectory(exportDirectory())},
+            {"lutMissing", !m_lutPath.isEmpty() && !readableExportFile(m_lutPath)}};
+}
+
 void MediaEngine::startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor) {
     if (targetColor != "8bit" && targetColor != "10bit") {
         emit exportFailed("未知的导出色彩规格");
@@ -1002,11 +1076,20 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
         }
     }
     if (busy()) { emit exportFailed("已有任务正在运行或停止，请稍后重试"); return; }
+    const QString mediaError = exportMediaError(clips);
+    if (!mediaError.isEmpty()) { emit exportFailed(mediaError); return; }
+    if (targetColor == "8bit" && !m_lutPath.isEmpty() && !readableExportFile(m_lutPath)) {
+        emit exportFailed("找不到调色文件，请重新选择或移除调色文件");
+        return;
+    }
+    const QString destination = exportDirectory();
+    if (!writableExportDirectory(destination)) {
+        emit exportFailed("导出位置无法写入，请更换文件夹");
+        return;
+    }
+    const QString out = QDir(destination).filePath(QString("随剪_成片_%1.mp4").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz")));
     m_exportRunning = true;
     emit busyChanged();
-    QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    QDir().mkpath(down);
-    QString out = down + QString("/随剪_成片_%1.mp4").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"));
 
     m_exportCancelled = false;
     const QString lutPath = m_lutPath;
@@ -1282,10 +1365,12 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
 }
 
 void MediaEngine::exportMetadata(const QVariantList &clips, const QString &formatType, const QString &outputPath) {
+    if (busy()) { emit statusMessage("请等待当前任务结束后再导出"); return; }
+    if (clips.isEmpty()) { emit statusMessage("请先把镜头加入时间线"); return; }
     QString ext = (formatType.toLower() == "csv") ? "csv" : "json";
     QString out = outputPath;
     if (out.isEmpty()) {
-        QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        const QString down = exportDirectory();
         out = down + QString("/随剪_元数据清单_%1.%2").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz")).arg(ext);
     }
 
@@ -1359,9 +1444,11 @@ void MediaEngine::exportMetadata(const QVariantList &clips, const QString &forma
 }
 
 void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterCanvas, const QString &outputPath) {
+    const QString mediaError = exportMediaError(clips);
+    if (!mediaError.isEmpty()) { emit statusMessage(mediaError); return; }
     QString out = outputPath;
     if (out.isEmpty()) {
-        QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        const QString down = exportDirectory();
         out = down + QString("/随剪_剪辑工程_%1.fcpxml").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"));
     }
 
@@ -1472,9 +1559,15 @@ void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterC
 }
 
 void MediaEngine::generateSrt(const QVariantList &clips, const QString &outputPath) {
+    if (busy()) { emit statusMessage("请等待当前任务结束后再导出"); return; }
+    if (clips.isEmpty()) { emit statusMessage("请先把镜头加入时间线"); return; }
+    writeSrt(clips, outputPath);
+}
+
+void MediaEngine::writeSrt(const QVariantList &clips, const QString &outputPath) {
     QString out = outputPath;
     if (out.isEmpty()) {
-        QString down = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+        const QString down = exportDirectory();
         out = down + QString("/随剪_字幕_%1.srt").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"));
     }
 
@@ -1807,14 +1900,23 @@ QString MediaEngine::socialCopy(const QVariantList &clips, const QString &platfo
 }
 
 void MediaEngine::exportJianying(const QVariantList &clips, const QString &masterCanvas, const QString &outputDir) {
-    if (clips.isEmpty()) { emit statusMessage("时间线上没有镜头"); return; }
+    const QString mediaError = exportMediaError(clips);
+    if (!mediaError.isEmpty()) { emit statusMessage(mediaError); return; }
     QString dirPath = outputDir;
     if (dirPath.startsWith("file://")) dirPath = QUrl(dirPath).toLocalFile();
     if (dirPath.isEmpty()) {
-        dirPath = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)
+        const QString destination = exportDirectory();
+        if (!writableExportDirectory(destination)) {
+            emit statusMessage("导出位置无法写入，请更换文件夹");
+            return;
+        }
+        dirPath = destination
             + QString("/随剪_剪映_%1").arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss_zzz"));
     }
-    QDir().mkpath(dirPath);
+    if (!QDir().mkpath(dirPath)) {
+        emit statusMessage("无法创建剪映草稿文件夹");
+        return;
+    }
     const bool vertical = masterCanvas == "vertical";
     const int canvasW = vertical ? 1080 : 1920;
     const int canvasH = vertical ? 1920 : 1080;
@@ -1980,7 +2082,7 @@ void MediaEngine::exportProjectExtras(const QVariantList &clips, const QString &
         annotated.append(clip);
     }
     saveProject({{"clips", annotated}, {"canvas", canvas}, {"beatMusic", m_beatMusic}, {"lut", m_lutPath}}, base + ".suijian");
-    generateSrt(annotated, base + ".srt");
+    writeSrt(annotated, base + ".srt");
 }
 
 void MediaEngine::exportJianyingAsync(const QVariantList &clips, const QString &canvas, const QString &path) {

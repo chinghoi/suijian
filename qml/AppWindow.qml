@@ -151,6 +151,17 @@ ApplicationWindow {
     property string canvasChoice: "auto"
     property string targetColor: "8bit"
 
+    function exportBlockedReason(type, clipCount, busy, readiness, color) {
+        if (clipCount === 0) return "请先把镜头加入时间线"
+        if (busy) return "请等待当前任务结束"
+        if (type < 0) return "请选择要导出的内容"
+        if (readiness.directoryUnavailable) return "这个文件夹无法写入。请更改导出位置。"
+        if (type <= 2 && readiness.mediaError) return readiness.mediaError
+        if (type === 0 && color === "8bit" && readiness.lutMissing) return "找不到调色文件。请在设置中更换或移除调色。"
+        if (type === 3 && !readiness.hasSubtitles) return "还没有字幕。请先在粗剪工具中运行「语音转写」。"
+        return ""
+    }
+
     function getAutoMasterCanvas() {
         var items = []
         // 优先以当前时间线上的镜头为准 (已包含用户手动矫正的真实方向)
@@ -920,8 +931,9 @@ ApplicationWindow {
             root.followExport = false
             exportModal.isRunning = false
             exportModal.progress = 0
-            exportModal.close()
-            statusBanner.show("导出失败: " + err)
+            exportModal.exportFailed = true
+            exportModal.statusText = "导出失败：" + err
+            exportModal.refreshReadiness()
         }
 
         function onTranscriptionProgress(percent, stepText) {
@@ -1073,27 +1085,17 @@ ApplicationWindow {
 
                 Item { Layout.fillWidth: true }
 
-                // 成片概览 Pill
-                Rectangle {
+                TextBadge {
                     color: "#1a1f2c"
                     border.color: "#38bdf8"
-                    border.width: 1
-                    radius: 13
-                    Layout.preferredHeight: 26
-                    Layout.preferredWidth: root.isMobileMode ? 130 : 250
-
-                    RowLayout {
-                        anchors.centerIn: parent
-                        spacing: 4
-                        Text {
-                            text: root.isMobileMode
-                                  ? ("成片总长: " + root.formatDuration(root.totalMovieDuration))
-                                  : ("成片总长: " + root.formatDuration(root.totalMovieDuration) + " (" + root.timelineClips.length + " 段)")
-                            color: "#f1f5f9"
-                            font.pixelSize: 11
-                            font.bold: true
-                        }
-                    }
+                    horizontalPadding: 12
+                    minimumHeight: 26
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: implicitWidth
+                    text: root.isMobileMode
+                        ? "成片总长: " + root.formatDuration(root.totalMovieDuration)
+                        : "成片总长: " + root.formatDuration(root.totalMovieDuration) + " (" + root.timelineClips.length + " 段)"
+                    font.pixelSize: 11
                 }
 
                 Item { Layout.fillWidth: true }
@@ -1106,19 +1108,36 @@ ApplicationWindow {
                     contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
 
-                // 导出大按钮
-                Button {
-                    text: root.isMobileMode ? "导出" : "导出 4K60 10-Bit 母带"
-                    onClicked: exportModal.open()
-                    background: Rectangle {
-                        radius: 5
-                        gradient: Gradient {
-                            orientation: Gradient.Horizontal
-                            GradientStop { position: 0.0; color: "#2563eb" }
-                            GradientStop { position: 1.0; color: "#9333ea" }
+                Item {
+                    implicitWidth: exportEntry.implicitWidth
+                    implicitHeight: exportEntry.implicitHeight
+                    readonly property string unavailableReason: root.timelineClips.length === 0
+                        ? "先把镜头加入时间线" : bridge.busy ? "请等待当前任务结束" : ""
+
+                    Button {
+                        id: exportEntry
+                        anchors.fill: parent
+                        text: "导出"
+                        enabled: parent.unavailableReason === ""
+                        Accessible.description: parent.unavailableReason
+                        onClicked: exportModal.open()
+                        background: Rectangle {
+                            color: !exportEntry.enabled ? "#252a38" : exportEntry.hovered ? "#4338ca" : "#3730a3"
+                            radius: 5
+                        }
+                        contentItem: Text {
+                            text: exportEntry.text
+                            color: exportEntry.enabled ? "#ffffff" : "#94a3b8"
+                            font.bold: true
+                            font.pixelSize: 11
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
                         }
                     }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    HoverHandler { id: exportEntryHover }
+                    ToolTip.visible: exportEntryHover.hovered && unavailableReason !== ""
+                    ToolTip.text: unavailableReason
+                    ToolTip.delay: 350
                 }
             }
         }
@@ -1230,9 +1249,12 @@ ApplicationWindow {
                     anchors.margins: 8
                     spacing: 6
 
-                    Rectangle {
-                        color: "#cc0f172a"; radius: 4; width: 54; height: 22
-                        Text { anchors.centerIn: parent; text: "10-Bit"; color: "#a855f7"; font.bold: true; font.pixelSize: 10 }
+                    TextBadge {
+                        color: "#cc0f172a"
+                        radius: 4
+                        minimumHeight: 22
+                        text: "10-Bit"
+                        textColor: "#a855f7"
                     }
 
                     Button {
@@ -1257,12 +1279,15 @@ ApplicationWindow {
                     border.width: 1
                     radius: 5
                     visible: root.currentSubtitleText.length > 0
-                    width: Math.min(parent.width - 24, mobileSubText.implicitWidth + 20)
+                    width: Math.max(0, Math.min(parent.width - 24, mobileSubText.implicitWidth + 20))
                     height: mobileSubText.implicitHeight + 10
 
                     Text {
                         id: mobileSubText
                         anchors.centerIn: parent
+                        width: Math.max(0, parent.width - 20)
+                        horizontalAlignment: Text.AlignHCenter
+                        textFormat: Text.PlainText
                         text: root.currentSubtitleText
                         color: "#ffffff"
                         font.pixelSize: 12
@@ -1524,18 +1549,14 @@ ApplicationWindow {
 
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
-                                Rectangle {
+                                TextBadge {
                                     visible: Boolean(mobInspectorPane.curMobClip)
-                                    color: "#3b82f6"; radius: 3
-                                    Layout.preferredHeight: 22; Layout.preferredWidth: mobOrientText.implicitWidth + 14
-                                    Text {
-                                        id: mobOrientText; anchors.centerIn: parent
-                                        text: (mobInspectorPane.curMobClip && mobInspectorPane.curMobClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9") + " ↻"
-                                        color: "#ffffff"; font.pixelSize: 10; font.bold: true
-                                    }
+                                    color: "#3b82f6"
+                                    radius: 3
+                                    minimumHeight: 22
+                                    text: (mobInspectorPane.curMobClip && mobInspectorPane.curMobClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9") + " ↻"
                                     MouseArea {
                                         anchors.fill: parent
-                                        hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: root.rotateActiveClip()
                                     }
@@ -1699,15 +1720,14 @@ ApplicationWindow {
                                 id: mobDateRow; spacing: 6
                                 Repeater {
                                     model: root.datesList
-                                    delegate: Rectangle {
-                                        Layout.preferredHeight: 24; Layout.preferredWidth: Math.max(58, mobDtText.implicitWidth + 12); radius: 4
+                                    delegate: TextBadge {
+                                        minimumHeight: 24
+                                        Layout.minimumWidth: 58
+                                        radius: 4
                                         color: root.activeDate === modelData ? "#2563eb" : "#222533"
-                                        Text {
-                                            id: mobDtText
-                                            anchors.centerIn: parent
-                                            text: modelData + (modelData === "全部" ? " (" + root.mediaPool.length + ")" : "")
-                                            color: "#ffffff"; font.pixelSize: 10; font.bold: root.activeDate === modelData
-                                        }
+                                        text: modelData + (modelData === "全部" ? " (" + root.mediaPool.length + ")" : "")
+                                        font.pixelSize: 10
+                                        font.bold: root.activeDate === modelData
                                         MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
                                     }
                                 }
@@ -1801,11 +1821,15 @@ ApplicationWindow {
                                             }
                                         }
                                     }
-                                    Rectangle {
+                                    TextBadge {
                                         visible: isPreviewingThis
                                         anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: 2
-                                        height: 14; width: mobPrevText.implicitWidth + 8; radius: 2; color: "#0284c7"
-                                        Text { id: mobPrevText; anchors.centerIn: parent; text: "正在预览"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
+                                        width: Math.max(0, Math.min(implicitWidth, parent.width - 4))
+                                        horizontalPadding: 4
+                                        radius: 2
+                                        color: "#0284c7"
+                                        text: "正在预览"
+                                        font.pixelSize: 8
                                     }
                                 }
 
@@ -1815,10 +1839,11 @@ ApplicationWindow {
                                     RowLayout {
                                         spacing: 4
                                         Text { text: modelData.duration_str; color: "#94a3b8"; font.pixelSize: 10 }
-                                        Rectangle {
-                                            color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
-                                            Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
-                                            Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                        TextBadge {
+                                            color: modelData.is_10bit ? "#8b5cf6" : "#334155"
+                                            radius: 2
+                                            text: modelData.is_10bit ? "10-Bit" : "8-Bit"
+                                            font.pixelSize: 9
                                         }
                                     }
                                 }
@@ -2318,15 +2343,14 @@ ApplicationWindow {
                                 id: dateRow; spacing: 6
                                 Repeater {
                                     model: root.datesList
-                                    delegate: Rectangle {
-                                        Layout.preferredHeight: 24; Layout.preferredWidth: Math.max(62, dtText.implicitWidth + 14); radius: 4
+                                    delegate: TextBadge {
+                                        minimumHeight: 24
+                                        Layout.minimumWidth: 62
+                                        radius: 4
                                         color: root.activeDate === modelData ? "#2563eb" : "#222533"
-                                        Text {
-                                            id: dtText
-                                            anchors.centerIn: parent
-                                            text: modelData + (modelData === "全部" ? " (" + root.mediaPool.length + ")" : "")
-                                            color: "#ffffff"; font.pixelSize: 11; font.bold: root.activeDate === modelData
-                                        }
+                                        text: modelData + (modelData === "全部" ? " (" + root.mediaPool.length + ")" : "")
+                                        font.pixelSize: 11
+                                        font.bold: root.activeDate === modelData
                                         MouseArea { anchors.fill: parent; onClicked: root.activeDate = modelData }
                                     }
                                 }
@@ -2369,21 +2393,15 @@ ApplicationWindow {
 
                             Item { Layout.fillWidth: true }
 
-                            Rectangle {
-                                Layout.preferredHeight: 22
-                                Layout.preferredWidth: selStatsText.implicitWidth + 12
+                            TextBadge {
+                                minimumHeight: 22
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: implicitWidth
                                 radius: 3
                                 color: root.selectedCount > 0 ? "#1e3a5f" : "#1e2230"
                                 border.color: root.selectedCount > 0 ? "#3b82f6" : "#334155"
-
-                                Text {
-                                    id: selStatsText
-                                    anchors.centerIn: parent
-                                    text: "已选 " + root.selectedCount + " / " + root.getFilteredMedia().length + " (" + root.selectedDurationStr + ")"
-                                    color: root.selectedCount > 0 ? "#93c5fd" : "#64748b"
-                                    font.pixelSize: 10
-                                    font.bold: true
-                                }
+                                text: "已选 " + root.selectedCount + " / " + root.getFilteredMedia().length + " (" + root.selectedDurationStr + ")"
+                                textColor: root.selectedCount > 0 ? "#93c5fd" : "#94a3b8"
                             }
                         }
                     }
@@ -2445,26 +2463,36 @@ ApplicationWindow {
                                             }
 
                                             // 右下角时长标签
-                                            Rectangle {
+                                            TextBadge {
                                                 anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.margins: 4
-                                                height: 15; width: durText.implicitWidth + 8; radius: 2; color: "#b3000000"
-                                                Text { id: durText; anchors.centerIn: parent; text: modelData.duration_str; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                                width: Math.max(0, Math.min(implicitWidth, parent.width - 8))
+                                                horizontalPadding: 4
+                                                radius: 2
+                                                color: "#b3000000"
+                                                text: modelData.duration_str
+                                                font.pixelSize: 9
                                             }
 
                                             // 右上角 10-Bit HDR 标签
-                                            Rectangle {
+                                            TextBadge {
                                                 visible: modelData.is_10bit
                                                 anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 4
-                                                height: 14; width: 34; radius: 2; color: "#8b5cf6"
-                                                Text { anchors.centerIn: parent; text: "10-Bit"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
+                                                radius: 2
+                                                color: "#8b5cf6"
+                                                text: "10-Bit"
+                                                font.pixelSize: 8
                                             }
 
                                             // 正在预览中徽标
-                                            Rectangle {
+                                            TextBadge {
                                                 visible: gridCard.isPreviewingThis
                                                 anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: 4
-                                                height: 16; width: previewNoticeText.implicitWidth + 8; radius: 3; color: "#0284c7"
-                                                Text { id: previewNoticeText; anchors.centerIn: parent; text: "正在预览"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                                width: Math.max(0, Math.min(implicitWidth, parent.width - 8))
+                                                horizontalPadding: 4
+                                                radius: 3
+                                                color: "#0284c7"
+                                                text: "正在预览"
+                                                font.pixelSize: 9
                                             }
 
                                             // 悬浮预览按钮
@@ -2564,11 +2592,15 @@ ApplicationWindow {
                                                 }
                                             }
                                         }
-                                        Rectangle {
+                                        TextBadge {
                                             visible: isPreviewingThis
                                             anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: 2
-                                            height: 14; width: listPrevText.implicitWidth + 8; radius: 2; color: "#0284c7"
-                                            Text { id: listPrevText; anchors.centerIn: parent; text: "正在预览"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
+                                            width: Math.max(0, Math.min(implicitWidth, parent.width - 4))
+                                            horizontalPadding: 4
+                                            radius: 2
+                                            color: "#0284c7"
+                                            text: "正在预览"
+                                            font.pixelSize: 8
                                         }
                                     }
 
@@ -2578,21 +2610,23 @@ ApplicationWindow {
                                         RowLayout {
                                             Layout.fillWidth: true; spacing: 4
                                             Text { text: modelData.filename; color: "#ffffff"; font.pixelSize: 11; font.bold: true; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                            Rectangle {
+                                            TextBadge {
                                                 visible: isPreviewingThis
-                                                color: "#0369a1"; radius: 2
-                                                Layout.preferredHeight: 14; Layout.preferredWidth: 46
-                                                Text { anchors.centerIn: parent; text: "源片预览"; color: "#ffffff"; font.pixelSize: 8; font.bold: true }
+                                                color: "#0369a1"
+                                                radius: 2
+                                                text: "源片预览"
+                                                font.pixelSize: 8
                                             }
                                         }
                                         RowLayout {
                                             spacing: 6
                                             Text { text: modelData.duration_str; color: "#94a3b8"; font.pixelSize: 10 }
                                             Text { text: modelData.width + "×" + modelData.height; color: "#64748b"; font.pixelSize: 10 }
-                                            Rectangle {
-                                                color: modelData.is_10bit ? "#8b5cf6" : "#334155"; radius: 2
-                                                Layout.preferredHeight: 14; Layout.preferredWidth: modelData.is_10bit ? 58 : 36
-                                                Text { anchors.centerIn: parent; text: modelData.is_10bit ? "10-Bit" : "8-Bit"; color: "#ffffff"; font.pixelSize: 9; font.bold: true }
+                                            TextBadge {
+                                                color: modelData.is_10bit ? "#8b5cf6" : "#334155"
+                                                radius: 2
+                                                text: modelData.is_10bit ? "10-Bit" : "8-Bit"
+                                                font.pixelSize: 9
                                             }
                                         }
                                     }
@@ -2736,16 +2770,12 @@ ApplicationWindow {
                                 anchors.leftMargin: 14; anchors.rightMargin: 14
                                 spacing: 10
 
-                                Rectangle {
-                                    color: "#0284c7"; radius: 3
-                                    Layout.preferredHeight: 20
-                                    Layout.preferredWidth: previewTagText.implicitWidth + 12
-                                    Text {
-                                        id: previewTagText
-                                        anchors.centerIn: parent
-                                        text: "素材源片预览"
-                                        color: "#ffffff"; font.bold: true; font.pixelSize: 11
-                                    }
+                                TextBadge {
+                                    color: "#0284c7"
+                                    radius: 3
+                                    minimumHeight: 20
+                                    text: "素材源片预览"
+                                    font.pixelSize: 11
                                 }
 
                                 Text {
@@ -2798,16 +2828,11 @@ ApplicationWindow {
                                 anchors.leftMargin: 14; anchors.rightMargin: 14
                                 spacing: 10
 
-                                Rectangle {
-                                    color: "#4f46e5"; radius: 3
-                                    Layout.preferredHeight: 18
-                                    Layout.preferredWidth: tlTagText.implicitWidth + 10
-                                    Text {
-                                        id: tlTagText
-                                        anchors.centerIn: parent
-                                        text: "时间线成片"
-                                        color: "#ffffff"; font.bold: true; font.pixelSize: 10
-                                    }
+                                TextBadge {
+                                    color: "#4f46e5"
+                                    radius: 3
+                                    minimumHeight: 18
+                                    text: "时间线成片"
                                 }
 
                                 Text {
@@ -2830,12 +2855,15 @@ ApplicationWindow {
                             border.width: 1
                             radius: 6
                             visible: root.monitorMode === "timeline" && root.currentSubtitleText.length > 0
-                            width: Math.min(parent.width - 48, desktopSubText.implicitWidth + 32)
+                            width: Math.max(0, Math.min(parent.width - 48, desktopSubText.implicitWidth + 32))
                             height: desktopSubText.implicitHeight + 16
 
                             Text {
                                 id: desktopSubText
                                 anchors.centerIn: parent
+                                width: Math.max(0, parent.width - 32)
+                                horizontalAlignment: Text.AlignHCenter
+                                textFormat: Text.PlainText
                                 text: root.currentSubtitleText
                                 color: "#ffffff"
                                 font.pixelSize: 15
@@ -2957,24 +2985,12 @@ ApplicationWindow {
                             font.pixelSize: 15
                         }
                         Item { Layout.fillWidth: true }
-                        Rectangle {
+                        TextBadge {
                             visible: Boolean(inspectorPane.currentActiveClip)
-                            color: orientArea.containsMouse ? "#2563eb" : "#3b82f6"; radius: 3
-                            Layout.preferredHeight: 20; Layout.preferredWidth: orientTagLayout.implicitWidth + 12
-                            RowLayout {
-                                id: orientTagLayout
-                                anchors.centerIn: parent
-                                spacing: 3
-                                Text {
-                                    id: orientTagText
-                                    text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9"
-                                    color: "#ffffff"; font.pixelSize: 10; font.bold: true
-                                }
-                                Text {
-                                    text: "↻"
-                                    color: "#bfdbfe"; font.pixelSize: 10; font.bold: true
-                                }
-                            }
+                            color: orientArea.containsMouse ? "#2563eb" : "#3b82f6"
+                            radius: 3
+                            minimumHeight: 20
+                            text: (inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9") + " ↻"
                             MouseArea {
                                 id: orientArea
                                 anchors.fill: parent
@@ -2983,17 +2999,12 @@ ApplicationWindow {
                                 onClicked: root.rotateActiveClip()
                             }
                         }
-                        Rectangle {
+                        TextBadge {
                             visible: Boolean(inspectorPane.currentActiveClip)
                             color: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.is_10bit ? "#8b5cf6" : "#475569"
                             radius: 3
-                            Layout.preferredHeight: 18; Layout.preferredWidth: colorTagText.implicitWidth + 12
-                            Text {
-                                id: colorTagText
-                                anchors.centerIn: parent
-                                text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.is_10bit ? "10-Bit" : "8-Bit"
-                                color: "#ffffff"; font.pixelSize: 10; font.bold: true
-                            }
+                            minimumHeight: 18
+                            text: inspectorPane.currentActiveClip && inspectorPane.currentActiveClip.is_10bit ? "10-Bit" : "8-Bit"
                         }
                     }
 
@@ -3454,21 +3465,15 @@ ApplicationWindow {
                                     { label: "75%", val: 75 },
                                     { label: "100% 全部", val: 100 }
                                 ]
-                                delegate: Rectangle {
-                                    height: 20
-                                    width: pillText.implicitWidth + 12
+                                delegate: TextBadge {
+                                    minimumHeight: 20
                                     radius: 3
                                     color: Math.round(retentionSlider.value) === modelData.val ? "#2563eb" : "#222533"
                                     border.color: Math.round(retentionSlider.value) === modelData.val ? "#3b82f6" : "#334155"
 
-                                    Text {
-                                        id: pillText
-                                        anchors.centerIn: parent
-                                        text: modelData.label
-                                        color: Math.round(retentionSlider.value) === modelData.val ? "#ffffff" : "#94a3b8"
-                                        font.pixelSize: 10
-                                        font.bold: Math.round(retentionSlider.value) === modelData.val
-                                    }
+                                    text: modelData.label
+                                    textColor: Math.round(retentionSlider.value) === modelData.val ? "#ffffff" : "#94a3b8"
+                                    font.bold: Math.round(retentionSlider.value) === modelData.val
 
                                     MouseArea {
                                         anchors.fill: parent
@@ -3575,40 +3580,18 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
 
-                        // 状态徽章 (运行中 / 暂停 / 待机就绪)
-                        Rectangle {
-                            height: 22
-                            width: statusBadgeText.implicitWidth + 36
-                            radius: 11
+                        TextBadge {
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: implicitWidth
+                            minimumHeight: 22
+                            horizontalPadding: 12
+                            showDot: true
+                            pulseDot: aiModal.isRunning && !aiModal.isPaused
+                            dotColor: !aiModal.isRunning ? "#94a3b8" : ((aiModal.isPaused || aiModal.isPausing) ? "#fbbf24" : "#34d399")
                             color: !aiModal.isRunning ? "#1e293b" : ((aiModal.isPaused || aiModal.isPausing) ? "#78350f" : "#064e3b")
                             border.color: !aiModal.isRunning ? "#475569" : ((aiModal.isPaused || aiModal.isPausing) ? "#f59e0b" : "#10b981")
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 12
-                                anchors.rightMargin: 12
-                                spacing: 6
-                                Rectangle {
-                                    width: 6
-                                    height: 6
-                                    radius: 3
-                                    color: !aiModal.isRunning ? "#94a3b8" : ((aiModal.isPaused || aiModal.isPausing) ? "#fbbf24" : "#34d399")
-
-                                    SequentialAnimation on opacity {
-                                        running: aiModal.isRunning && !aiModal.isPaused
-                                        loops: Animation.Infinite
-                                        NumberAnimation { to: 0.3; duration: 600 }
-                                        NumberAnimation { to: 1.0; duration: 600 }
-                                    }
-                                }
-                                Text {
-                                    id: statusBadgeText
-                                    text: !aiModal.isRunning ? "待机就绪" : (aiModal.isPaused ? "已暂停" : (aiModal.isPausing ? "正在暂停…" : "初筛全速进行中"))
-                                    color: !aiModal.isRunning ? "#94a3b8" : ((aiModal.isPaused || aiModal.isPausing) ? "#fde68a" : "#6ee7b7")
-                                    font.pixelSize: 10
-                                    font.bold: true
-                                }
-                            }
+                            textColor: !aiModal.isRunning ? "#94a3b8" : ((aiModal.isPaused || aiModal.isPausing) ? "#fde68a" : "#6ee7b7")
+                            text: !aiModal.isRunning ? "待机就绪" : (aiModal.isPaused ? "已暂停" : (aiModal.isPausing ? "正在暂停…" : "初筛全速进行中"))
                         }
 
                         Item { Layout.fillWidth: true }
@@ -3950,361 +3933,288 @@ ApplicationWindow {
         }
     }
 
-    // 导出模态弹窗
     Dialog {
         id: exportModal
         anchors.centerIn: parent
-        width: Math.min(560, root.width - 24); height: Math.min(520, root.height - 24)
+        title: "导出"
         modal: true
+        width: Math.min(480, root.width - 24)
+        height: Math.min(implicitHeight, root.height - 32)
+        closePolicy: isRunning ? Popup.NoAutoClose : Popup.CloseOnEscape
+        padding: 16
+        palette.base: "#202638"
+        palette.button: "#243147"
+        palette.buttonText: "#e2e8f0"
+        palette.text: "#e2e8f0"
+        palette.highlight: "#2563eb"
+        palette.highlightedText: "#ffffff"
         background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
-
-        header: Rectangle {
-            color: "transparent"
-            height: 38
-            width: parent.width
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 16
-                anchors.rightMargin: 12
-
-                Text {
-                    text: "导出 4K 60fps 最终母带与元数据"
-                    color: "#f1f5f9"
-                    font.bold: true
-                    font.pixelSize: 13
-                    Layout.fillWidth: true
-                }
-
-                Rectangle {
-                    width: 24
-                    height: 24
-                    radius: 12
-                    color: exportCloseArea.containsMouse ? "#334155" : "transparent"
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "✕"
-                        color: exportCloseArea.containsMouse ? "#ffffff" : "#94a3b8"
-                        font.pixelSize: 12
-                    }
-
-                    MouseArea {
-                        id: exportCloseArea
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (exportModal.isRunning) {
-                                exportModal.isStopping = true
-                                bridge.cancelExport()
-                            }
-                            exportModal.close()
-                        }
-                    }
-                }
-            }
+        header: Label {
+            text: exportModal.title
+            padding: 16
+            color: "#f1f5f9"
+            font.pixelSize: 16
+            font.bold: true
         }
 
-        property real progress: 0.0
-        property string statusText: "准备就绪"
+        property real progress: 0
+        property string statusText: ""
         property bool isRunning: false
         property bool isStopping: false
+        property bool showSettings: false
+        property bool exportFailed: false
+        property var readiness: ({})
+        readonly property bool isVideo: exportType.currentIndex === 0
+        readonly property bool isProject: exportType.currentIndex === 1 || exportType.currentIndex === 2
+        readonly property string chosenCanvas: root.canvasChoice === "auto" ? root.getAutoMasterCanvas() : root.canvasChoice
+        readonly property string blockedReason: root.exportBlockedReason(
+            exportType.currentIndex, root.timelineClips.length, bridge.busy, readiness, root.targetColor)
 
         onAboutToShow: {
-            if (!exportModal.isRunning) {
-                exportCanvasCombo.currentIndex = root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
+            exportType.currentIndex = 0
+            showSettings = false
+            exportFailed = false
+            statusText = ""
+            progress = 0
+            refreshReadiness()
+        }
+
+        function refreshReadiness() {
+            readiness = bridge.exportReadiness(root.timelineClips)
+        }
+
+        function submitExport() {
+            refreshReadiness()
+            if (blockedReason || isRunning) return
+            const clips = root.timelineClips
+            const canvas = chosenCanvas
+            const type = exportType.currentIndex
+            if (type === 0) {
+                root.masterCanvas = canvas
+                root.followExport = true
+                isRunning = true
+                isStopping = false
+                exportFailed = false
+                progress = 0
+                statusText = "正在准备导出…"
+                bridge.startExport(clips, canvas, root.targetColor)
+                return
+            }
+
+            close()
+            if (type === 1 || type === 2) {
+                toolModal.open()
+                if (type === 1) bridge.exportJianyingAsync(clips, canvas, "")
+                else bridge.exportFcpxmlAsync(clips, canvas, "")
+            } else if (type === 3) {
+                bridge.generateSrt(clips, "")
+            } else {
+                bridge.exportMetadata(clips, type === 4 ? "csv" : "json", "")
             }
         }
 
-        ColumnLayout {
-            anchors.fill: parent; spacing: 10
-            Text {
-                text: "SDR 适合普通屏幕分享，HLG/PQ 素材会转换亮度与色彩。HLG 输出仅接受 HLG 素材；D-Log 素材需另行调色。"
-                color: "#38bdf8"; font.pixelSize: 11; lineHeight: 1.3
-                Layout.fillWidth: true
-                wrapMode: Text.WordWrap
-            }
+        contentItem: ScrollView {
+            id: exportScroll
+            clip: true
+            contentWidth: availableWidth
+            implicitHeight: exportOptions.implicitHeight
 
-            RowLayout {
-                Layout.fillWidth: true
-                Text {
-                    text: "导出画幅母带标准："
-                    color: exportModal.isRunning ? "#64748b" : "#cbd5e1"
-                    font.pixelSize: 12
+            ColumnLayout {
+                id: exportOptions
+                width: exportScroll.availableWidth
+                spacing: 10
+
+                Label {
+                    text: root.timelineClips.length + " 个镜头 · " + root.formatDuration(root.totalMovieDuration)
+                    color: "#cbd5e1"
+                    Layout.fillWidth: true
                 }
-                Item { Layout.fillWidth: true }
-                Text {
-                    visible: exportCanvasCombo.currentIndex === 0
-                    text: "已自动识别: " + (root.getAutoMasterCanvas() === "vertical" ? "9:16 竖屏" : "16:9 横屏")
-                    color: exportModal.isRunning ? "#64748b" : "#38bdf8"
-                    font.pixelSize: 11
+
+                Label {
+                    visible: !exportModal.isRunning
+                    text: "想导出什么？"
+                    color: "#f1f5f9"
                     font.bold: true
                 }
-            }
-            ComboBox {
-                id: exportCanvasCombo; Layout.fillWidth: true
-                enabled: !exportModal.isRunning
-                opacity: enabled ? 1.0 : 0.45
-                model: [
-                    "自动决定 (按时间线视频真实拍摄方向智能自适应 · 推荐)",
-                    "3840×2160 16:9 横屏母带 (强制横屏 · YouTube / B站 / 电脑大屏)",
-                    "2160×3840 9:16 竖屏大片 (强制竖屏 · 抖音 / 视频号 / 小红书 / 移动端)"
-                ]
-                currentIndex: root.canvasChoice === "horizontal" ? 1 : (root.canvasChoice === "vertical" ? 2 : 0)
-                onActivated: {
-                    if (currentIndex === 0) root.canvasChoice = "auto"
-                    else if (currentIndex === 1) root.canvasChoice = "horizontal"
-                    else root.canvasChoice = "vertical"
-                }
-            }
-
-            Text {
-                text: "色彩与编码规格："
-                color: exportModal.isRunning ? "#64748b" : "#cbd5e1"
-                font.pixelSize: 12
-            }
-            ComboBox {
-                id: exportColorCombo; Layout.fillWidth: true
-                enabled: !exportModal.isRunning
-                opacity: enabled ? 1.0 : 0.45
-                model: [
-                    "10-Bit HLG（仅用于 HLG 素材，不转换色彩）",
-                    "8-Bit SDR (Rec.709 / 35Mbps 标准网络快速分享)"
-                ]
-                currentIndex: root.targetColor === "8bit" ? 1 : 0
-                onActivated: {
-                    root.targetColor = currentIndex === 1 ? "8bit" : "10bit"
-                }
-            }
-
-            Rectangle { Layout.fillWidth: true; height: 1; color: "#242938" }
-
-            // 专业工程与元数据导出栏
-            Text {
-                text: "工程导出保留出入点、旋转和音乐。字幕附 SRT；LUT 和毛玻璃背景需在目标软件重建。另附完整随剪工程。"
-                Layout.fillWidth: true
-                wrapMode: Text.WordWrap
-                color: exportModal.isRunning ? "#64748b" : "#cbd5e1"
-                font.pixelSize: 11
-                font.bold: true
-            }
-
-            RowLayout {
-                Layout.fillWidth: true; spacing: 8
-                enabled: !exportModal.isRunning
-                opacity: enabled ? 1.0 : 0.45
-
-                Button {
-                    text: "FCPXML 工程"
-                    ToolTip.text: "导出标准 FCPXML 1.9，可直接导入 DaVinci Resolve (达芬奇) 或 Final Cut Pro 继续精修"
-                    ToolTip.visible: hovered
-                    Layout.fillWidth: true; Layout.preferredHeight: 32
-                    onClicked: {
-                        var expCanvas = exportCanvasCombo.currentIndex === 0 ? root.getAutoMasterCanvas() : (exportCanvasCombo.currentIndex === 1 ? "horizontal" : "vertical")
-                        toolModal.open(); bridge.exportFcpxmlAsync(root.timelineClips, expCanvas, "")
-                    }
-                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#6366f1" }
-                    contentItem: Text { text: parent.text; color: "#a5b4fc"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-
-                Button {
-                    text: "元数据 (JSON)"
-                    ToolTip.text: "导出镜头出入点、色彩朝向、语音文本等完整 JSON 结构化数据"
-                    ToolTip.visible: hovered
-                    Layout.fillWidth: true; Layout.preferredHeight: 32
-                    onClicked: { bridge.exportMetadata(root.timelineClips, "json", "") }
-                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#0284c7" }
-                    contentItem: Text { text: parent.text; color: "#38bdf8"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-
-                Button {
-                    text: "元数据 (CSV)"
-                    ToolTip.text: "导出可在 Excel / Numbers 中直接查看的镜头明细表"
-                    ToolTip.visible: hovered
-                    Layout.fillWidth: true; Layout.preferredHeight: 32
-                    onClicked: { bridge.exportMetadata(root.timelineClips, "csv", "") }
-                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#059669" }
-                    contentItem: Text { text: parent.text; color: "#34d399"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-
-                Button {
-                    text: "SRT 字幕"
-                    ToolTip.text: "导出标准 SRT 独立字幕文件"
-                    ToolTip.visible: hovered
-                    Layout.preferredWidth: 76; Layout.preferredHeight: 32
-                    onClicked: { bridge.generateSrt(root.timelineClips, "") }
-                    background: Rectangle { color: "#1e293b"; radius: 4; border.color: "#d97706" }
-                    contentItem: Text { text: parent.text; color: "#fbbf24"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true; spacing: 6
-                enabled: !exportModal.isRunning
-                opacity: enabled ? 1.0 : 0.45
-                Button {
-                    text: "LUT"
+                ComboBox {
+                    id: exportType
+                    visible: !exportModal.isRunning
                     Layout.fillWidth: true
-                    onClicked: lutDialog.open()
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-                Button {
-                    text: "剪映草稿"
-                    Layout.fillWidth: true
-                    onClicked: {
-                        var expCanvas = exportCanvasCombo.currentIndex === 0 ? root.getAutoMasterCanvas() : (exportCanvasCombo.currentIndex === 1 ? "horizontal" : "vertical")
-                        toolModal.open(); bridge.exportJianyingAsync(root.timelineClips, expCanvas, "")
+                    enabled: !exportModal.isRunning && !bridge.busy
+                    model: [
+                        "成片视频（MP4）",
+                        "继续剪辑（剪映草稿）",
+                        "继续剪辑（Final Cut Pro / 达芬奇）",
+                        "字幕文件（SRT）",
+                        "镜头清单（Excel / CSV）",
+                        "镜头清单（JSON）"
+                    ]
+                    onActivated: {
+                        exportModal.exportFailed = false
+                        exportModal.statusText = ""
                     }
-                    background: Rectangle { color: "#1e293b"; radius: 4 }
-                    contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                 }
-            }
 
-            Rectangle { Layout.fillWidth: true; height: 1; color: "#242938" }
+                Label {
+                    visible: !exportModal.isRunning
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: "#cbd5e1"
+                    text: {
+                        if (exportModal.isVideo) return "生成可播放、可分享的 4K 视频。"
+                        if (exportModal.isProject) return "把剪好的镜头交给其他软件继续编辑。请保留原素材。已有字幕会另附文件，调色和毛玻璃背景需在目标软件重做。"
+                        if (exportType.currentIndex === 3) return "把已有字幕保存为单独文件，可导入视频平台或剪辑软件。"
+                        return "保存镜头名称和剪辑时间，方便查看和整理。"
+                    }
+                }
 
-            // 实时导出状态看板
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 60
-                color: exportModal.isRunning ? "#0d1b2a" : "#141722"
-                border.color: exportModal.isRunning ? "#2563eb" : "#2a2f42"
-                border.width: exportModal.isRunning ? 1.5 : 1
-                radius: 6
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        text: "保存到"
+                        color: "#f1f5f9"
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: bridge.exportDirectory
+                        color: "#cbd5e1"
+                        wrapMode: Text.WrapAnywhere
+                    }
+                    Button {
+                        text: "更改…"
+                        enabled: !exportModal.isRunning && !bridge.busy
+                        onClicked: {
+                            exportFolderDialog.currentFolder = bridge.exportDirectoryUrl()
+                            exportFolderDialog.open()
+                        }
+                    }
+                }
+
+                Button {
+                    visible: !exportModal.isRunning && (exportModal.isVideo || exportModal.isProject)
+                    enabled: !exportModal.isRunning && !bridge.busy
+                    Layout.fillWidth: true
+                    text: exportModal.showSettings ? "收起设置" :
+                        ((exportModal.chosenCanvas === "vertical" ? "竖屏 9:16" : "横屏 16:9")
+                         + (exportModal.isVideo ? (root.targetColor === "8bit" ? " · 普通色彩" : " · HDR") : "")
+                         + " · 修改设置")
+                    onClicked: exportModal.showSettings = !exportModal.showSettings
+                }
 
                 ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 4
+                    visible: !exportModal.isRunning && exportModal.showSettings && (exportModal.isVideo || exportModal.isProject)
+                    enabled: !exportModal.isRunning && !bridge.busy
+                    Layout.fillWidth: true
+                    spacing: 8
 
-                    RowLayout {
+                    Label { text: "画面方向"; color: "#f1f5f9" }
+                    ComboBox {
                         Layout.fillWidth: true
-                        Rectangle {
-                            height: 22
-                            width: expBadgeText.implicitWidth + 36
-                            radius: 11
-                            color: exportModal.isRunning ? "#064e3b" : "#1e293b"
-                            border.color: exportModal.isRunning ? "#10b981" : "#475569"
-
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 12
-                                anchors.rightMargin: 12
-                                spacing: 6
-                                Rectangle {
-                                    width: 6; height: 6; radius: 3
-                                    color: exportModal.isRunning ? "#34d399" : "#94a3b8"
-                                    SequentialAnimation on opacity {
-                                        running: exportModal.isRunning
-                                        loops: Animation.Infinite
-                                        NumberAnimation { to: 0.3; duration: 600 }
-                                        NumberAnimation { to: 1.0; duration: 600 }
-                                    }
-                                }
-                                Text {
-                                    id: expBadgeText
-                                    text: exportModal.isRunning ? "硬件加速渲染中" : "待机就绪"
-                                    color: exportModal.isRunning ? "#6ee7b7" : "#94a3b8"
-                                    font.pixelSize: 10
-                                    font.bold: true
-                                }
+                        model: ["自动（推荐）", "横屏 16:9", "竖屏 9:16"]
+                        currentIndex: root.canvasChoice === "horizontal" ? 1 : root.canvasChoice === "vertical" ? 2 : 0
+                        onActivated: root.canvasChoice = currentIndex === 1 ? "horizontal" : currentIndex === 2 ? "vertical" : "auto"
+                    }
+                    Label { visible: exportModal.isVideo; text: "色彩"; color: "#f1f5f9" }
+                    ComboBox {
+                        visible: exportModal.isVideo
+                        Layout.fillWidth: true
+                        model: ["普通色彩 SDR（推荐）", "HDR（HLG）"]
+                        currentIndex: root.targetColor === "10bit" ? 1 : 0
+                        onActivated: root.targetColor = currentIndex === 1 ? "10bit" : "8bit"
+                    }
+                    Label {
+                        visible: exportModal.isVideo && root.targetColor === "10bit"
+                        text: "只有时间线上所有视频都是 10 位 HLG 素材时，才能导出 HDR。不确定时请选择普通色彩。"
+                        color: "#cbd5e1"
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+                    RowLayout {
+                        visible: exportModal.isVideo && root.targetColor === "8bit"
+                        Layout.fillWidth: true
+                        Button {
+                            text: root.exportLutPath ? "更换调色文件…" : "添加调色文件（可选）…"
+                            onClicked: lutDialog.open()
+                        }
+                        Button {
+                            visible: root.exportLutPath !== ""
+                            text: "移除调色"
+                            onClicked: {
+                                root.exportLutPath = ""
+                                bridge.setExportLut("")
+                                recoveryTimer.restart()
+                                exportModal.refreshReadiness()
                             }
                         }
-                        Item { Layout.fillWidth: true }
-                        Text {
-                            visible: exportModal.isRunning
-                            text: Math.round(exportModal.progress) + "%"
-                            color: "#38bdf8"
-                            font.bold: true
-                            font.pixelSize: 12
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 5
-                        radius: 2.5
-                        color: "#1e2433"
-                        Rectangle {
-                            anchors.left: parent.left
-                            anchors.top: parent.top
-                            anchors.bottom: parent.bottom
-                            width: Math.max(0, Math.min(parent.width, parent.width * (exportModal.progress / 100.0)))
-                            radius: 2.5
-                            color: "#3b82f6"
-                            Behavior on width { NumberAnimation { duration: 180 } }
-                        }
-                    }
-
-                    Text {
-                        text: exportModal.statusText
-                        color: exportModal.isRunning ? "#e2e8f0" : "#94a3b8"
-                        font.pixelSize: 11
-                        Layout.fillWidth: true
-                        elide: Text.ElideMiddle
                     }
                 }
-            }
 
-            RowLayout {
-                Layout.fillWidth: true
+                Label {
+                    visible: !exportModal.isRunning && exportModal.blockedReason !== ""
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: "#fbbf24"
+                    text: exportModal.blockedReason
+                }
                 Button {
-                    text: exportModal.isRunning ? "中止导出" : "取消"
-                    onClicked: {
-                        exportModal.isStopping = true
-                        bridge.cancelExport()
+                    visible: !exportModal.isRunning && !bridge.busy &&
+                        ((exportModal.isVideo || exportModal.isProject) && !!exportModal.readiness.mediaError ||
+                         exportModal.isVideo && root.targetColor === "8bit" && exportModal.readiness.lutMissing ||
+                         exportModal.readiness.directoryUnavailable)
+                    text: "重新检查文件"
+                    onClicked: exportModal.refreshReadiness()
+                }
+
+                ProgressBar {
+                    visible: exportModal.isRunning
+                    Layout.fillWidth: true
+                    value: Math.max(0, Math.min(1, exportModal.progress / 100))
+                }
+                Label {
+                    visible: exportModal.statusText !== ""
+                    Layout.fillWidth: true
+                    wrapMode: Text.WrapAnywhere
+                    color: exportModal.exportFailed ? "#fca5a5" : "#cbd5e1"
+                    text: exportModal.isStopping ? "正在停止导出…" :
+                        (exportModal.isRunning ? Math.round(exportModal.progress) + "%  " : "") + exportModal.statusText
+                }
+            }
+        }
+
+        footer: DialogButtonBox {
+            alignment: Qt.AlignRight
+            Button {
+                text: exportModal.isRunning ? "停止导出" : "关闭"
+                enabled: !exportModal.isStopping
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: {
+                    if (!exportModal.isRunning) {
                         exportModal.close()
+                        return
                     }
-                    background: Rectangle {
-                        color: exportModal.isRunning ? "#7f1d1d" : "#334155"
-                        border.color: exportModal.isRunning ? "#ef4444" : "#475569"
-                        radius: 4
-                    }
-                    contentItem: Text {
-                        text: parent.text
-                        color: "#ffffff"
-                        font.bold: exportModal.isRunning
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                }
-                Item { Layout.fillWidth: true }
-                Button {
-                    text: exportModal.isStopping ? "正在停止导出…" : exportModal.isRunning ? "硬件加速渲染压制中..." : "开始硬件加速渲染成片 (MP4)"
-                    enabled: !exportModal.isRunning && !bridge.busy && root.timelineClips.length > 0
-                    opacity: enabled ? 1.0 : 0.45
-                    onClicked: {
-                        var expCanvas = "horizontal"
-                        if (exportCanvasCombo.currentIndex === 0) {
-                            expCanvas = root.getAutoMasterCanvas()
-                        } else if (exportCanvasCombo.currentIndex === 1) {
-                            expCanvas = "horizontal"
-                        } else {
-                            expCanvas = "vertical"
-                        }
-                        root.masterCanvas = expCanvas
-                        root.followExport = true
-                        exportModal.isStopping = false
-                        exportModal.isRunning = true
-                        exportModal.progress = 1
-                        exportModal.statusText = "正在启动硬件加速导出管道..."
-                        bridge.startExport(root.timelineClips, expCanvas, root.targetColor)
-                    }
-                    background: Rectangle {
-                        color: parent.enabled ? "#2563eb" : "#222533"
-                        border.color: parent.enabled ? "#3b82f6" : "#334155"
-                        radius: 4
-                    }
-                    contentItem: Text {
-                        text: parent.text
-                        color: parent.enabled ? "#ffffff" : "#64748b"
-                        font.bold: true
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
+                    exportModal.isStopping = true
+                    bridge.cancelExport()
                 }
             }
+            Button {
+                visible: !exportModal.isRunning
+                text: ["导出视频", "导出剪映草稿", "导出工程", "导出字幕", "导出清单", "导出清单"][Math.max(0, exportType.currentIndex)]
+                enabled: !exportModal.blockedReason && !exportModal.isRunning
+                highlighted: true
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: exportModal.submitExport()
+            }
+        }
+    }
+
+    FolderDialog {
+        id: exportFolderDialog
+        title: "选择导出文件夹"
+        onAccepted: {
+            const accepted = bridge.setExportDirectory(selectedFolder)
+            exportModal.exportFailed = !accepted
+            exportModal.statusText = accepted ? "" : "无法使用这个文件夹，请更换导出位置。"
+            exportModal.refreshReadiness()
         }
     }
 
@@ -4324,7 +4234,12 @@ ApplicationWindow {
         title: "选择 .cube 3D LUT"
         fileMode: FileDialog.OpenFile
         nameFilters: ["3D LUT (*.cube)", "所有文件 (*)"]
-        onAccepted: { root.exportLutPath = selectedFile.toString(); bridge.setExportLut(root.exportLutPath); recoveryTimer.restart() }
+        onAccepted: {
+            root.exportLutPath = selectedFile.toString()
+            bridge.setExportLut(root.exportLutPath)
+            recoveryTimer.restart()
+            exportModal.refreshReadiness()
+        }
     }
     FileDialog {
         id: musicDialog
