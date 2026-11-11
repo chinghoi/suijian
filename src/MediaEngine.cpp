@@ -259,13 +259,16 @@ void MediaEngine::importPaths(const QStringList &paths) {
 
             if (fi.isDir()) {
                 if (dirForRecent.isEmpty()) dirForRecent = fi.absoluteFilePath();
+                QStringList directoryFiles;
                 QDirIterator it(fi.absoluteFilePath(), QDir::Files, QDirIterator::Subdirectories);
                 while (it.hasNext()) {
                     if (m_toolCancelled) return;
                     const QString entry = it.next();
                     if (validExts.contains("." + it.fileInfo().suffix().toLower()))
-                        files.append(entry);
+                        directoryFiles.append(entry);
                 }
+                directoryFiles.sort();
+                files.append(directoryFiles);
             } else if (fi.isFile()) {
                 if (validExts.contains("." + fi.suffix().toLower())) {
                     files.append(fi.absoluteFilePath());
@@ -275,7 +278,6 @@ void MediaEngine::importPaths(const QStringList &paths) {
         }
 
         files.removeDuplicates();
-        files.sort();
         if (files.isEmpty()) {
             QMetaObject::invokeMethod(this, [this]() {
                 emit scanError("未找到有效视频文件（支持 .MP4 / .MOV）");
