@@ -84,7 +84,7 @@ struct CameraDirectory {
 
 QStringList videoFiles(const QString &directory) {
     QStringList files;
-    QDirIterator it(directory, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+    QDirIterator it(directory, QDir::Files, QDirIterator::Subdirectories);
     while (it.hasNext()) {
         const QString path = it.next();
         const QString suffix = it.fileInfo().suffix().toLower();
@@ -259,7 +259,7 @@ void MediaEngine::importPaths(const QStringList &paths) {
 
             if (fi.isDir()) {
                 if (dirForRecent.isEmpty()) dirForRecent = fi.absoluteFilePath();
-                QDirIterator it(fi.absoluteFilePath(), QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+                QDirIterator it(fi.absoluteFilePath(), QDir::Files, QDirIterator::Subdirectories);
                 while (it.hasNext()) {
                     if (m_toolCancelled) return;
                     const QString entry = it.next();
@@ -324,6 +324,7 @@ void MediaEngine::importPaths(const QStringList &paths) {
                         if (!path.isEmpty() && !recent.contains(path) && recent.size() < 10)
                             recent.append(path);
                     }
+                    oldFile.close();
                 }
                 QJsonArray entries;
                 for (const auto &path : recent) entries.append(path);
