@@ -142,6 +142,11 @@ int main(int argc, char **argv) {
     const QString emptySrtPath = temp.path()+"/empty.srt";
     engine.generateSrt({firstClip}, emptySrtPath);
     require(!QFile::exists(emptySrtPath), "empty SRT file was created without transcript");
+    QVariantMap blankAudioClip = firstClip;
+    blankAudioClip["subtitles"] = QVariantList{QVariantMap{{"start", 0.0}, {"end", 1.0}, {"text", "[BLANK_AUDIO]"}}};
+    require(!engine.exportReadiness({blankAudioClip}).value("hasSubtitles").toBool(), "blank-audio placeholder counted as a subtitle");
+    engine.generateSrt({blankAudioClip}, emptySrtPath);
+    require(!QFile::exists(emptySrtPath), "blank-audio placeholder exported as a subtitle");
 
     const QString jsonPath = temp.path()+"/metadata.json";
     engine.exportMetadata({captionedClip}, "json", jsonPath);

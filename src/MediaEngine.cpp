@@ -616,6 +616,7 @@ QVariantList MediaEngine::transcriptSegmentsForClip(const QVariantMap &clip) con
         QVariantList result;
         for (const QVariant &item : source) {
             const QVariantMap segment = item.toMap();
+            if (segment.value("text").toString().trimmed().compare(QStringLiteral("[BLANK_AUDIO]"), Qt::CaseInsensitive) == 0) continue;
             if (segment.value("end").toDouble() <= clipStart
                 || segment.value("start").toDouble() >= clipEnd) continue;
             result.append(segment);
@@ -627,7 +628,7 @@ QVariantList MediaEngine::transcriptSegmentsForClip(const QVariantMap &clip) con
     if (!supplied.isEmpty()) return intersecting(supplied);
 
     const QString explicitText = clip.value("text").toString().trimmed();
-    if (!explicitText.isEmpty()) {
+    if (!explicitText.isEmpty() && explicitText.compare(QStringLiteral("[BLANK_AUDIO]"), Qt::CaseInsensitive) != 0) {
         QVariantMap segment;
         segment["start"] = clipStart;
         segment["end"] = clipEnd;
