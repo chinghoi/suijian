@@ -40,6 +40,7 @@ ApplicationWindow {
     }
 
     component EditorCombo: ComboBox {
+        id: combo
         implicitHeight: 38
         font.pixelSize: 12
         palette.window: "#1e2431"
@@ -49,6 +50,19 @@ ApplicationWindow {
         palette.text: "#f1f5f9"
         palette.highlight: "#2563eb"
         palette.highlightedText: "#ffffff"
+        delegate: ItemDelegate {
+            required property string modelData
+            required property int index
+            width: ListView.view.width
+            text: modelData
+            highlighted: combo.highlightedIndex === index
+            font.weight: combo.currentIndex === index ? Font.DemiBold : Font.Normal
+            palette.text: "#e2e8f0"
+            palette.highlightedText: "#ffffff"
+            background: Rectangle {
+                color: parent.down ? "#253652" : parent.highlighted ? "#294263" : "transparent"
+            }
+        }
         background: Rectangle {
             implicitWidth: 140
             radius: 6
@@ -1660,13 +1674,15 @@ ApplicationWindow {
                                             onClicked: clipActionsMenu.open()
                                             Menu {
                                                 id: clipActionsMenu
-                                                y: clipActionsButton.height + 4
-                                                width: 166
+                                                x: clipActionsButton.width - width
+                                                y: -implicitHeight - 4
+                                                width: 174
                                                 palette.window: "#1e2431"
-                                                palette.text: "#f1f5f9"
-                                                palette.buttonText: "#f1f5f9"
-                                                palette.highlight: "#2563eb"
-                                                palette.highlightedText: "#ffffff"
+                                                palette.windowText: "#f1f5f9"
+                                                palette.light: "#294263"
+                                                palette.midlight: "#253652"
+                                                palette.mid: "#353d50"
+                                                palette.dark: "#536078"
                                                 MenuItem { text: "从当前画面分割"; onTriggered: root.splitCurrentClip() }
                                                 MenuItem { text: "复制片段"; onTriggered: root.duplicateCurrentClip() }
                                                 MenuItem { text: "往前移一位"; enabled: root.activeClipIndex > 0; onTriggered: root.moveCurrentClip(-1) }
@@ -4226,7 +4242,10 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         text: bridge.exportDirectory
                         color: "#cbd5e1"
-                        wrapMode: Text.WrapAnywhere
+                        elide: Text.ElideMiddle
+                        HoverHandler { id: exportPathHover }
+                        ToolTip.visible: truncated && exportPathHover.hovered
+                        ToolTip.text: text
                     }
                     EditorButton {
                         text: "选择文件夹…"
