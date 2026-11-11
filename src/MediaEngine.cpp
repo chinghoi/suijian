@@ -29,6 +29,7 @@
 #include <QUuid>
 #include <QGuiApplication>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QMutexLocker>
 
 static QString mediaFingerprint(const QString &path);
@@ -1059,6 +1060,11 @@ QUrl MediaEngine::exportDirectoryUrl() const {
     return QUrl::fromLocalFile(exportDirectory());
 }
 
+bool MediaEngine::openOutputFolder(const QString &path) const {
+    const QFileInfo file(path);
+    return file.exists() && QDesktopServices::openUrl(QUrl::fromLocalFile(file.isDir() ? file.absoluteFilePath() : file.absolutePath()));
+}
+
 bool MediaEngine::setExportDirectory(const QUrl &folder) {
     if (busy()) return false;
     const QString path = folder.toLocalFile();
@@ -1495,6 +1501,7 @@ void MediaEngine::exportMetadata(const QVariantList &clips, const QString &forma
     }
     file.close();
     emit statusMessage(QString("元数据清单已成功导出: %1").arg(out));
+    emit outputReady(out);
 }
 
 void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterCanvas, const QString &outputPath) {
@@ -1610,15 +1617,17 @@ void MediaEngine::exportFcpxml(const QVariantList &clips, const QString &masterC
     if (!file.commit()) { emit statusMessage("FCPXML 写入失败"); return; }
     exportProjectExtras(clips, masterCanvas, out);
     emit statusMessage(QString("FCPXML 已导出：%1。已保留出入点、旋转及音乐；字幕请导入同名 SRT，LUT 和毛玻璃背景需在目标软件重建；完整设置见同名 .suijian 工程").arg(out));
+    emit outputReady(out);
 }
 
 void MediaEngine::generateSrt(const QVariantList &clips, const QString &outputPath) {
     if (busy()) { emit statusMessage("请等待当前任务结束后再导出"); return; }
     if (clips.isEmpty()) { emit statusMessage("请先把镜头加入时间线"); return; }
-    writeSrt(clips, outputPath);
+    const QString written = writeSrt(clips, outputPath);
+    if (!written.isEmpty()) emit outputReady(written);
 }
 
-void MediaEngine::writeSrt(const QVariantList &clips, const QString &outputPath) {
+QString MediaEngine::writeSrt(const QVariantList &clips, const QString &outputPath) {
     QString out = outputPath;
     if (out.isEmpty()) {
         const QString down = exportDirectory();
@@ -1628,7 +1637,7 @@ void MediaEngine::writeSrt(const QVariantList &clips, const QString &outputPath)
     QSaveFile file(out);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         emit statusMessage("无法创建字幕文件");
-        return;
+        return {};
     }
 
     QTextStream ts(&file);
@@ -1679,14 +1688,15 @@ void MediaEngine::writeSrt(const QVariantList &clips, const QString &outputPath)
         ts.flush();
         file.cancelWriting();
         emit statusMessage("没有可导出的字幕。请先运行「语音转写」，或为镜头添加字幕文本");
-        return;
+        return {};
     }
     ts.flush();
     if (!file.commit()) {
         emit statusMessage("字幕文件写入失败");
-        return;
+        return {};
     }
     emit statusMessage(QString("字幕已导出: %1").arg(out));
+    return out;
 }
 
 void MediaEngine::setBeatMusic(const QString &path) {
@@ -2038,6 +2048,7 @@ void MediaEngine::exportJianying(const QVariantList &clips, const QString &maste
     }
     exportProjectExtras(clips, masterCanvas, dirPath + "/timeline");
     emit statusMessage(QString("剪映草稿已写出：%1。已写入旋转和音乐轨；字幕需导入 timeline.srt，LUT 和模糊背景需重建。完整设置在 timeline.suijian；草稿仍需在剪映客户端验证").arg(dirPath));
+    emit outputReady(dirPath);
 }
 
 bool MediaEngine::busy() const {
