@@ -32,9 +32,14 @@ for (const match of source.matchAll(/on[A-Z]\w*\s*:\s*\{/g)) {
     const open = match.index + match[0].lastIndexOf('{');
     new Function(source.slice(open + 1, blockEnd(open)));
 }
-const player = {stop() { this.stopped = true; }, source: '', position: 0};
-const context = {player, bridge: {setBeatMusic() {}, setExportLut() {}, snapToMusicAsync() {}},
-    timelineSync: {restart() {}}, recoveryTimer: {restart() {}},
+const MediaPlayer = {LoadingMedia: 1, LoadedMedia: 2, BufferedMedia: 3, BufferingMedia: 4,
+    EndOfMedia: 5, PlayingState: 6, PausedState: 7};
+const player = {stop() { this.playbackState = 0; }, pause() { this.playbackState = MediaPlayer.PausedState; },
+    play() { this.playbackState = MediaPlayer.PlayingState; }, source: '', position: 0,
+    mediaStatus: MediaPlayer.LoadingMedia};
+const context = {player, MediaPlayer, Qt: {callLater() {}, platform: {os: "linux"}},
+    bridge: {setBeatMusic() {}, setExportLut() {}, snapToMusicAsync() {}, localMediaUrl(path) { return 'file://' + path; }},
+    timelineSync: {restart() {}, stop() {}}, recoveryTimer: {restart() {}},
     toolModal: {open() {}}, statusBanner: {show() {}},
     aiModal: {}, exportModal: {}, Math, JSON};
 context.clipIdCounter = 0;
@@ -46,10 +51,18 @@ const b = {src:'/b.mov', start:4, end:7, dur:3};
 context.timelineClips = [b]; context.playingClip = a; context.activeClipIndex = 0;
 context.synchronizeTimeline();
 assert.equal(player.source, 'file:///b.mov');
+context.applyMonitorLoad();
+assert.equal(player.position, 0);
+player.mediaStatus = MediaPlayer.LoadedMedia;
+context.applyMonitorLoad();
 assert.equal(player.position, 4000);
+assert.equal(player.playbackState, MediaPlayer.PausedState);
 context.timelineClips = [b, a]; context.playingClip = a;
 context.synchronizeTimeline();
 assert.equal(context.activeClipIndex, 1);
+assert.equal(context.pendingMonitorLoad.position, 0);
+context.applyMonitorLoad();
+assert.equal(player.position, 0);
 assert.equal(player.source, 'file:///a.mov');
 context.timelineClips = [{...a, clip_id:"first"}, {...a, clip_id:"duplicate"}];
 context.playingClip = context.timelineClips[1]; context.activeClipIndex = 1;
@@ -58,10 +71,21 @@ assert.equal(context.activeClipIndex, 1);
 context.timelineClips = [];
 context.synchronizeTimeline();
 assert.equal(player.source, ''); assert.equal(context.activeClipIndex, -1);
+assert.equal(context.pendingMonitorLoad, null);
 context.restoreProject({clips:[b], canvas:'vertical', color:'8bit', beatMusic:'/music.wav', active:0});
 context.synchronizeTimeline();
 assert.equal(player.source, 'file:///b.mov');
 assert.equal(context.canvasChoice, 'vertical'); assert.equal(context.beatMusic, '/music.wav');
+context.Qt.platform.os = "osx";
+player.position = 0;
+context.applyMonitorLoad();
+assert.equal(context.monitorPriming, true);
+assert.equal(player.playbackState, MediaPlayer.PlayingState);
+player.position = 100;
+context.applyMonitorLoad();
+assert.equal(player.position, 4000);
+assert.equal(context.monitorPriming, false);
+assert.equal(player.playbackState, MediaPlayer.PausedState);
 context.aiModal.isRunning = true; context.aiModal.isStopping = true;
 context.onAiCancelled();
 assert.equal(context.aiModal.isRunning, false); assert.equal(context.aiModal.isStopping, false);

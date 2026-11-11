@@ -14,6 +14,66 @@ ApplicationWindow {
     title: "随剪"
     color: "#0c0d11"
 
+    component EditorButton: Button {
+        id: button
+        property bool primary: false
+        property bool destructive: false
+        implicitHeight: 34
+        leftPadding: 12
+        rightPadding: 12
+        font.pixelSize: 12
+        font.bold: primary
+        contentItem: Text {
+            text: button.text
+            font: button.font
+            color: !button.enabled ? "#8490a4" : button.destructive ? "#fecaca" : "#f1f5f9"
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+        background: Rectangle {
+            radius: 6
+            color: !button.enabled ? "#202431" : button.primary
+                   ? (button.down ? "#1d4ed8" : button.hovered ? "#3b82f6" : "#2563eb")
+                   : (button.down ? "#1d2330" : button.hovered ? "#30394d" : "#242a39")
+            border.color: button.visualFocus ? "#7dd3fc" : button.primary && button.enabled ? color : "#353d50"
+        }
+    }
+
+    component EditorCombo: ComboBox {
+        implicitHeight: 38
+        font.pixelSize: 12
+        palette.window: "#1e2431"
+        palette.dark: "#cbd5e1"
+        palette.mid: "#353d50"
+        palette.buttonText: "#f1f5f9"
+        palette.text: "#f1f5f9"
+        palette.highlight: "#2563eb"
+        palette.highlightedText: "#ffffff"
+        background: Rectangle {
+            implicitWidth: 140
+            radius: 6
+            color: parent.down ? "#1d2330" : "#242a39"
+            border.color: parent.visualFocus ? "#7dd3fc" : "#353d50"
+        }
+    }
+
+    component MonitorPlaceholder: Item {
+        required property bool hasFrame
+        visible: root.monitorMode !== "idle" && (!hasFrame || root.monitorMessage.length > 0)
+        Image {
+            anchors.fill: parent
+            source: parent.visible && !parent.hasFrame ? root.monitorThumbnail : ""
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            opacity: 0.7
+        }
+        TextBadge {
+            anchors.centerIn: parent
+            color: "#d9161822"
+            text: root.monitorMessage || "正在等待视频画面…"
+        }
+    }
+
     // 响应式布局（根据窗口宽度与横竖屏自动无缝切换，完全纯净无人工按钮）
     readonly property bool isMobileMode: root.width < 920 || (root.height > root.width && root.width < 1050)
     property int mobileTab: 1 // 默认在素材池，方便导入
@@ -43,6 +103,7 @@ ApplicationWindow {
     property bool projectReady: false
     property bool restoringProject: false
     property bool allowClose: false
+    readonly property bool canChangeProject: !bridge.busy && !root.isImporting
     property int clipIdCounter: 0
     function nextClipId() { return Date.now().toString() + "_" + (++root.clipIdCounter).toString() }
     property var playingClip: null
@@ -58,12 +119,35 @@ ApplicationWindow {
                 active: activeClipIndex, beatMusic: beatMusic, lut: exportLutPath}
     }
     property string exportLutPath: ""
+    function requestNewProject() {
+        if (!root.canChangeProject) return
+        if (root.timelineClips.length || root.mediaPool.length || root.beatMusic || root.exportLutPath)
+            newProjectDialog.open()
+        else
+            root.startNewProject()
+    }
+
+    function startNewProject() {
+        if (!root.canChangeProject) return
+        const blankProject = {clips: [], active: -1}
+        if (!bridge.saveProject(blankProject, "")) return
+        root.restoreProject(blankProject)
+        root.clearMonitor()
+        root.mobileTab = 1
+        statusBanner.show("已新建剪辑，可以导入素材了")
+    }
+
     function restoreProject(project) {
         if (!project || !project.clips) return
         restoringProject = true
+        root.pendingMonitorLoad = null
         player.stop()
+        root.monitorPriming = false
         root.mediaPool = project.mediaPool || []
         root.datesList = project.dates || ["全部"]
+        root.activeDate = "全部"
+        root.currentSourceLabel = root.mediaPool.length ? "已加载" : "未选择"
+        root.speechAnnotations = ({})
         root.selectedPathsMap = project.selectedPaths || ({})
         root.canvasChoice = project.canvas || "auto"
         root.targetColor = project.color || "8bit"
@@ -79,7 +163,7 @@ ApplicationWindow {
             restoredClips.push(clip)
         }
         root.timelineClips = restoredClips
-        root.activeClipIndex = Math.max(0, Math.min(project.active || 0, project.clips.length - 1))
+        root.activeClipIndex = project.clips.length ? Math.max(0, Math.min(project.active || 0, project.clips.length - 1)) : -1
         root.playingClip = root.timelineClips[root.activeClipIndex] || null
         root.undoStack = []; root.redoStack = []
         root.recalcSelectionStats()
@@ -93,8 +177,7 @@ ApplicationWindow {
     function synchronizeTimeline() {
         if (root.restoringProject) return
         if (!root.timelineClips.length) {
-            player.stop(); player.source = ""; root.monitorMode = "idle"
-            root.activeClipIndex = -1; root.playingClip = null; root.currentSubtitleText = ""
+            root.clearMonitor()
             return
         }
         var selected = Math.max(0, Math.min(root.activeClipIndex, root.timelineClips.length - 1))
@@ -121,8 +204,55 @@ ApplicationWindow {
     }
     FileDialog {
         id: projectSaveDialog; title: "保存随剪工程"; fileMode: FileDialog.SaveFile
+        property bool startNewAfterSave: false
         nameFilters: ["随剪工程 (*.suijian)"]; defaultSuffix: "suijian"
-        onAccepted: if (bridge.saveProject(root.projectState(), selectedFile.toString())) statusBanner.show("工程已保存")
+        onAccepted: {
+            const startNew = startNewAfterSave
+            startNewAfterSave = false
+            if (!bridge.saveProject(root.projectState(), selectedFile.toString())) return
+            if (startNew) root.startNewProject()
+            else statusBanner.show("工程已保存")
+        }
+        onRejected: startNewAfterSave = false
+    }
+    Popup {
+        id: newProjectDialog
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.CloseOnEscape
+        width: Math.min(410, root.width - 24)
+        padding: 16
+        background: Rectangle { color: "#161822"; border.color: "#2a2f42"; radius: 10 }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label { text: "新建剪辑"; color: "#f1f5f9"; font.bold: true; font.pixelSize: 16 }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                color: "#cbd5e1"
+                text: "新剪辑会替换当前工作区。保存工程后可随时打开，原视频会保留。"
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                EditorButton { text: "取消"; onClicked: newProjectDialog.close() }
+                Item { Layout.fillWidth: true }
+                EditorButton {
+                    text: "直接新建"
+                    enabled: root.canChangeProject
+                    onClicked: { newProjectDialog.close(); root.startNewProject() }
+                }
+                EditorButton {
+                    text: "保存后新建"
+                    primary: true
+                    enabled: root.canChangeProject
+                    onClicked: {
+                        newProjectDialog.close()
+                        projectSaveDialog.startNewAfterSave = true
+                        projectSaveDialog.open()
+                    }
+                }
+            }
+        }
     }
     FileDialog {
         id: projectOpenDialog; title: "打开随剪工程"; nameFilters: ["随剪工程 (*.suijian)"]
@@ -138,6 +268,7 @@ ApplicationWindow {
     }
     Shortcut { sequence: StandardKey.Save; enabled: !bridge.busy; onActivated: projectSaveDialog.open() }
     Shortcut { sequence: StandardKey.Open; enabled: !bridge.busy; onActivated: projectOpenDialog.open() }
+    Shortcut { sequences: [StandardKey.New]; enabled: root.canChangeProject; onActivated: root.requestNewProject() }
 
     property int activeClipIndex: -1
     property bool isContinuousPlay: true
@@ -146,6 +277,13 @@ ApplicationWindow {
     // 监视器工作模式 ("idle": 待机无媒体 | "preview": 素材源片独立预览 | "timeline": 时间线成片播放)
     property string monitorMode: "idle"
     property var previewItem: null
+    property var pendingMonitorLoad: null
+    property bool monitorPriming: false
+    readonly property string monitorThumbnail: monitorMode === "preview" ? (previewItem?.thumb || "") :
+        (timelineClips[activeClipIndex]?.thumb || "")
+    readonly property string monitorMessage: monitorMode === "idle" ? "" :
+        player.error !== MediaPlayer.NoError ? "无法预览，请检查原视频是否仍可打开" :
+        pendingMonitorLoad ? "正在载入预览…" : ""
 
     property string masterCanvas: "horizontal"
     property string canvasChoice: "auto"
@@ -293,11 +431,7 @@ ApplicationWindow {
         if (root.activeClipIndex >= 0) {
             root.loadActiveClip(root.activeClipIndex, false)
         } else {
-            player.stop()
-            player.source = ""
-            root.activeClipIndex = -1
-            root.monitorMode = "idle"
-            root.previewItem = null
+            root.clearMonitor()
         }
         reconciliationDialog.close()
         statusBanner.show("已清理 " + removedCount + " 个源素材丢失的失效片段")
@@ -495,41 +629,76 @@ ApplicationWindow {
         statusBanner.show("已将选中的 " + selected.length + " 个素材添加至时间线")
     }
 
-    function loadActiveClip(index, autoPlay) {
+    function loadActiveClip(index, autoPlay, seekMs) {
         if (index < 0 || index >= timelineClips.length) return
+        timelineSync.stop()
         activeClipIndex = index
         root.monitorMode = "timeline"
         root.previewItem = null
         var clip = timelineClips[index]
         root.playingClip = clip
-        player.stop()
-        player.source = "file://" + clip.src
-        player.position = Math.floor(clip.start * 1000)
-        if (autoPlay) {
+        root.requestMonitorLoad(clip.src, seekMs ?? Math.floor(clip.start * 1000), autoPlay)
+    }
+
+    function requestMonitorLoad(path, position, autoPlay) {
+        root.currentSubtitleText = ""
+        root.pendingMonitorLoad = {position: position, autoPlay: autoPlay}
+        if (root.monitorPriming) player.pause()
+        player.source = bridge.localMediaUrl(path)
+        root.monitorPriming = false
+        Qt.callLater(root.applyMonitorLoad)
+    }
+
+    function applyMonitorLoad() {
+        var request = root.pendingMonitorLoad
+        if (!request || (player.mediaStatus !== MediaPlayer.LoadedMedia &&
+                         player.mediaStatus !== MediaPlayer.BufferedMedia &&
+                         player.mediaStatus !== MediaPlayer.BufferingMedia &&
+                         player.mediaStatus !== MediaPlayer.EndOfMedia)) return
+
+        // AVFoundation initially seeks at whole-second precision until its clock starts.
+        if (root.monitorPriming) {
+            if (player.position === 0 && player.mediaStatus !== MediaPlayer.EndOfMedia) return
+        } else if (Qt.platform.os === "osx" && request.position > 0 && player.position === 0) {
+            root.monitorPriming = true
             player.play()
+            return
         }
+
+        // LoadingMedia ignores seeks. PausedState decodes a frame without playing audio.
+        if (!request.autoPlay) player.pause()
+        player.position = request.position
+        if (request.autoPlay) player.play()
+        root.monitorPriming = false
+        root.pendingMonitorLoad = null
+        root.updateMonitorPosition()
+    }
+
+    function clearMonitor() {
+        root.monitorMode = "idle"
+        root.previewItem = null
+        root.activeClipIndex = -1
+        root.playingClip = null
+        root.currentSubtitleText = ""
+        root.pendingMonitorLoad = null
+        player.stop()
+        player.source = ""
+        root.monitorPriming = false
     }
 
     function startMediaPreview(m) {
         if (!m || !m.path) return
-        player.stop()
         root.monitorMode = "preview"
         root.previewItem = m
-        player.source = "file://" + m.path
-        player.position = 0
-        player.play()
+        root.requestMonitorLoad(m.path, 0, true)
         statusBanner.show("素材源片预览: " + m.filename)
     }
 
     function stopMediaPreview() {
-        player.stop()
-        player.source = ""
-        root.previewItem = null
         if (root.timelineClips.length > 0 && root.activeClipIndex >= 0 && root.activeClipIndex < root.timelineClips.length) {
             root.loadActiveClip(root.activeClipIndex, false)
         } else {
-            root.activeClipIndex = -1
-            root.monitorMode = "idle"
+            root.clearMonitor()
         }
     }
 
@@ -573,17 +742,17 @@ ApplicationWindow {
 
     function stepActiveIn(delta) {
         if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) return
-        pushUndoState("调整镜头入点")
         var clip = Object.assign({}, timelineClips[activeClipIndex])
         var newStart = Math.max(0.0, clip.start + delta)
-        if (newStart < clip.end - 0.5) {
+        if (newStart < clip.end - 0.5 && newStart !== clip.start) {
+            pushUndoState("调整镜头起点")
             clip.start = Number(newStart.toFixed(2))
             clip.dur = Number((clip.end - clip.start).toFixed(2))
             clip.dur_str = clip.dur + "s"
             var list = timelineClips.slice()
             list[activeClipIndex] = clip
             timelineClips = list
-            player.position = Math.floor(clip.start * 1000)
+            root.loadActiveClip(activeClipIndex, false)
         }
     }
 
@@ -600,7 +769,7 @@ ApplicationWindow {
         var list = timelineClips.slice()
         list[activeClipIndex] = clip
         timelineClips = list
-        player.position = Math.floor(Math.max(clip.start, clip.end - 1.0) * 1000)
+        root.loadActiveClip(activeClipIndex, false, Math.floor(Math.max(clip.start, clip.end - 1.0) * 1000))
     }
 
     function splitCurrentClip() {
@@ -652,11 +821,7 @@ ApplicationWindow {
             activeClipIndex = Math.min(activeClipIndex, timelineClips.length - 1)
             loadActiveClip(activeClipIndex, false)
         } else {
-            player.stop()
-            player.source = ""
-            root.activeClipIndex = -1
-            root.monitorMode = "idle"
-            root.previewItem = null
+            root.clearMonitor()
         }
         statusBanner.show("已从时间线删除该片段")
     }
@@ -676,59 +841,71 @@ ApplicationWindow {
     MediaPlayer {
         id: player
         videoOutput: root.isMobileMode ? mobileMonitorOutput : desktopMonitorOutput
-        audioOutput: AudioOutput {}
+        audioOutput: AudioOutput { muted: root.monitorPriming }
 
+        onMediaStatusChanged: if (root.pendingMonitorLoad) Qt.callLater(root.applyMonitorLoad)
+        onErrorOccurred: {
+            root.pendingMonitorLoad = null
+            root.monitorPriming = false
+        }
         onPositionChanged: {
-            if (root.monitorMode === "timeline") {
-                if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) {
-                    root.currentSubtitleText = ""
-                    return
-                }
-                var curClip = timelineClips[activeClipIndex]
-                var posSec = player.position / 1000.0
+            if (root.monitorPriming && player.position > 0) Qt.callLater(root.applyMonitorLoad)
+            else root.updateMonitorPosition()
+        }
+    }
 
-                // 实时口播字幕匹配
-                if (curClip.subtitles && curClip.subtitles.length > 0) {
-                    var foundSub = false
-                    for (var s = 0; s < curClip.subtitles.length; s++) {
-                        var sub = curClip.subtitles[s]
-                        if (posSec >= sub.start && posSec <= sub.end) {
-                            root.currentSubtitleText = sub.text
-                            foundSub = true
-                            break
-                        }
-                    }
-                    if (!foundSub) root.currentSubtitleText = ""
-                } else if (curClip.text) {
-                    root.currentSubtitleText = curClip.text
-                } else {
-                    root.currentSubtitleText = ""
-                }
-
-                if (posSec >= curClip.end) {
-                    if (root.isContinuousPlay) {
-                        if (activeClipIndex + 1 < timelineClips.length) {
-                            root.loadActiveClip(activeClipIndex + 1, true)
-                        } else {
-                            player.pause()
-                            player.position = Math.floor(curClip.start * 1000)
-                        }
-                    } else {
-                        player.position = Math.floor(curClip.start * 1000)
-                    }
-                } else if (posSec < curClip.start) {
-                    player.position = Math.floor(curClip.start * 1000)
-                }
-            } else if (root.monitorMode === "preview") {
+    function updateMonitorPosition() {
+        if (root.pendingMonitorLoad) return
+        if (root.monitorMode === "timeline") {
+            if (activeClipIndex < 0 || activeClipIndex >= timelineClips.length) {
                 root.currentSubtitleText = ""
-                // 源片独立预览模式：播放到末尾自动重置至开头暂停
-                if (player.duration > 0 && player.position >= player.duration - 250) {
-                    player.pause()
-                    player.position = 0
+                return
+            }
+            var curClip = timelineClips[activeClipIndex]
+            var posSec = player.position / 1000.0
+
+            // 实时口播字幕匹配
+            if (curClip.subtitles && curClip.subtitles.length > 0) {
+                var foundSub = false
+                for (var s = 0; s < curClip.subtitles.length; s++) {
+                    var sub = curClip.subtitles[s]
+                    if (posSec >= sub.start && posSec <= sub.end) {
+                        root.currentSubtitleText = sub.text
+                        foundSub = true
+                        break
+                    }
                 }
+                if (!foundSub) root.currentSubtitleText = ""
+            } else if (curClip.text) {
+                root.currentSubtitleText = curClip.text
             } else {
                 root.currentSubtitleText = ""
             }
+
+            var startMs = Math.floor(curClip.start * 1000)
+            if (posSec >= curClip.end && player.playbackState === MediaPlayer.PlayingState) {
+                if (root.isContinuousPlay) {
+                    if (activeClipIndex + 1 < timelineClips.length) {
+                        root.loadActiveClip(activeClipIndex + 1, true)
+                    } else {
+                        player.pause()
+                        player.position = startMs
+                    }
+                } else {
+                    player.position = startMs
+                }
+            } else if (player.position < startMs) {
+                player.position = startMs
+            }
+        } else if (root.monitorMode === "preview") {
+            root.currentSubtitleText = ""
+            // 源片独立预览模式：播放到末尾自动重置至开头暂停
+            if (player.duration > 0 && player.position >= player.duration - 250) {
+                player.pause()
+                player.position = 0
+            }
+        } else {
+            root.currentSubtitleText = ""
         }
     }
 
@@ -787,11 +964,7 @@ ApplicationWindow {
 
             // 载入素材后监视器默认保持待机，用户点击预览或添加时间线时才唤醒
             if (root.timelineClips.length === 0) {
-                player.stop()
-                player.source = ""
-                root.activeClipIndex = -1
-                root.monitorMode = "idle"
-                root.previewItem = null
+                root.clearMonitor()
             }
             statusBanner.show("成功载入 " + list.length + " 个素材 (" + root.currentSourceLabel + ")")
         }
@@ -864,6 +1037,12 @@ ApplicationWindow {
             root.pushUndoState("应用 AI 智能初筛结果")
             root.timelineClips = tasks
             root.loadActiveClip(0, false)
+            root.mobileTab = 0
+            Qt.callLater(function() {
+                var timeline = root.isMobileMode ? mobileTimelineView : desktopTimelineView
+                timeline.forceLayout()
+                timeline.positionViewAtBeginning()
+            })
             statusBanner.show("AI 自动筛选完成，共剪辑出 " + tasks.length + " 段精彩镜头！")
         }
 
@@ -1065,79 +1244,77 @@ ApplicationWindow {
         // 1. 顶部全局导航栏
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: root.isMobileMode ? 48 : 52
+            Layout.preferredHeight: root.isMobileMode ? 76 : 52
             color: "#14161c"
             border.color: "#222530"
-            border.width: 1
 
-            RowLayout {
+            ColumnLayout {
                 anchors.fill: parent
-                anchors.leftMargin: root.isMobileMode ? 10 : 16
-                anchors.rightMargin: root.isMobileMode ? 10 : 16
-                spacing: root.isMobileMode ? 8 : 10
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 6
+                anchors.bottomMargin: 6
+                spacing: 4
 
-                Text {
-                    text: root.isMobileMode ? "随剪" : "随剪"
-                    color: "#ffffff"
-                    font.bold: true
-                    font.pixelSize: root.isMobileMode ? 14 : 16
-                }
-
-                Item { Layout.fillWidth: true }
-
-                TextBadge {
-                    color: "#1a1f2c"
-                    border.color: "#38bdf8"
-                    horizontalPadding: 12
-                    minimumHeight: 26
+                RowLayout {
                     Layout.fillWidth: true
-                    Layout.maximumWidth: implicitWidth
-                    text: root.isMobileMode
-                        ? "成片总长: " + root.formatDuration(root.totalMovieDuration)
-                        : "成片总长: " + root.formatDuration(root.totalMovieDuration) + " (" + root.timelineClips.length + " 段)"
-                    font.pixelSize: 11
-                }
+                    Layout.fillHeight: true
+                    spacing: 6
 
-                Item { Layout.fillWidth: true }
-
-                // AI 智能初筛按钮
-                Button {
-                    text: "AI 智能初筛"
-                    onClicked: aiModal.open()
-                    background: Rectangle { color: parent.hovered ? "#4338ca" : "#3730a3"; radius: 5 }
-                    contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                }
-
-                Item {
-                    implicitWidth: exportEntry.implicitWidth
-                    implicitHeight: exportEntry.implicitHeight
-                    readonly property string unavailableReason: root.timelineClips.length === 0
-                        ? "先把镜头加入时间线" : bridge.busy ? "请等待当前任务结束" : ""
-
-                    Button {
-                        id: exportEntry
-                        anchors.fill: parent
-                        text: "导出"
-                        enabled: parent.unavailableReason === ""
-                        Accessible.description: parent.unavailableReason
-                        onClicked: exportModal.open()
-                        background: Rectangle {
-                            color: !exportEntry.enabled ? "#252a38" : exportEntry.hovered ? "#4338ca" : "#3730a3"
-                            radius: 5
-                        }
-                        contentItem: Text {
-                            text: exportEntry.text
-                            color: exportEntry.enabled ? "#ffffff" : "#94a3b8"
-                            font.bold: true
-                            font.pixelSize: 11
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                        }
+                    Text {
+                        text: "随剪"
+                        color: "#f1f5f9"
+                        font.bold: true
+                        font.pixelSize: 15
                     }
-                    HoverHandler { id: exportEntryHover }
-                    ToolTip.visible: exportEntryHover.hovered && unavailableReason !== ""
-                    ToolTip.text: unavailableReason
-                    ToolTip.delay: 350
+                    EditorButton {
+                        text: "新建剪辑"
+                        enabled: root.canChangeProject
+                        onClicked: root.requestNewProject()
+                    }
+                    EditorButton {
+                        text: "打开工程"
+                        enabled: root.canChangeProject
+                        onClicked: projectOpenDialog.open()
+                    }
+                    Item { Layout.fillWidth: true }
+                    Label {
+                        visible: !root.isMobileMode
+                        text: clipSummary.text
+                        color: "#cbd5e1"
+                    }
+                    Item { visible: !root.isMobileMode; Layout.fillWidth: true }
+                    EditorButton {
+                        visible: !root.isMobileMode
+                        text: "AI 初筛"
+                        onClicked: aiModal.open()
+                    }
+                    EditorButton {
+                        id: exportEntry
+                        text: "导出"
+                        primary: true
+                        enabled: root.timelineClips.length > 0 && !bridge.busy
+                        readonly property string unavailableReason: root.timelineClips.length === 0
+                            ? "先把片段加入时间线" : bridge.busy ? "请等待当前任务结束" : ""
+                        Accessible.description: unavailableReason
+                        onClicked: exportModal.open()
+                        HoverHandler { id: exportEntryHover }
+                        ToolTip.visible: exportEntryHover.hovered && unavailableReason !== ""
+                        ToolTip.text: unavailableReason
+                        ToolTip.delay: 350
+                    }
+                }
+
+                Label {
+                    id: clipSummary
+                    visible: root.isMobileMode
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: root.timelineClips.length
+                          ? root.timelineClips.length + " 段 · 成片 " + root.formatDuration(root.totalMovieDuration)
+                          : "时间线为空"
+                    color: "#a8b3c7"
+                    font.pixelSize: 12
                 }
             }
         }
@@ -1189,7 +1366,7 @@ ApplicationWindow {
             // 移动端监视器视窗
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.floor(root.height * 0.38)
+                Layout.preferredHeight: Math.min(420, Math.floor(root.height * 0.34))
                 color: "#000000"
                 clip: true
 
@@ -1197,6 +1374,18 @@ ApplicationWindow {
                     id: mobileMonitorOutput
                     anchors.fill: parent
                     fillMode: VideoOutput.PreserveAspectFit
+                }
+                MonitorPlaceholder {
+                    anchors.fill: parent
+                    hasFrame: mobileMonitorOutput.sourceRect.width > 0
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: root.monitorMode !== "idle" && !root.pendingMonitorLoad
+                    onClicked: {
+                        if (player.playbackState === MediaPlayer.PlayingState) player.pause()
+                        else player.play()
+                    }
                 }
 
                 // 移动端待机模式黑底提示 (彻底消除纯黑假死错觉)
@@ -1235,27 +1424,12 @@ ApplicationWindow {
                     }
                 }
 
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: {
-                        if (player.playbackState === MediaPlayer.PlayingState) player.pause()
-                        else player.play()
-                    }
-                }
-
                 RowLayout {
                     anchors.top: parent.top
                     anchors.right: parent.right
                     anchors.margins: 8
                     spacing: 6
-
-                    TextBadge {
-                        color: "#cc0f172a"
-                        radius: 4
-                        minimumHeight: 22
-                        text: "10-Bit"
-                        textColor: "#a855f7"
-                    }
+                    visible: root.monitorMode !== "preview"
 
                     Button {
                         text: "⛶"
@@ -1297,75 +1471,59 @@ ApplicationWindow {
                 }
             }
 
-            // 移动端紧凑播放控制器栏
             Rectangle {
                 Layout.fillWidth: true
-                Layout.preferredHeight: 42
+                Layout.preferredHeight: 46
                 color: "#11131a"
                 border.color: "#1e222d"
-                border.width: 1
 
                 RowLayout {
                     anchors.fill: parent
-                    anchors.leftMargin: 10; anchors.rightMargin: 10
-                    spacing: 8
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 10
+                    spacing: 5
+                    enabled: root.monitorMode !== "idle" && !root.pendingMonitorLoad
 
-                    Button {
-                        text: "-1s"; Layout.preferredWidth: 38; Layout.preferredHeight: 28
-                        enabled: root.monitorMode !== "idle"
-                        opacity: enabled ? 1.0 : 0.35
+                    EditorButton {
+                        text: "−1秒"
+                        leftPadding: 8
+                        rightPadding: 8
+                        Accessible.name: "后退一秒"
                         onClicked: player.position = Math.max(0, player.position - 1000)
-                        background: Rectangle { color: "#222533"; radius: 4 }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
-
-                    Button {
-                        enabled: root.monitorMode !== "idle"
-                        opacity: enabled ? 1.0 : 0.35
-                        text: player.playbackState === MediaPlayer.PlayingState ? "暂停" : "播放"
-                        Layout.preferredWidth: 48; Layout.preferredHeight: 28
+                    EditorButton {
+                        text: player.playbackState === MediaPlayer.PlayingState && !root.monitorPriming ? "暂停" : "播放"
+                        primary: true
                         onClicked: {
                             if (player.playbackState === MediaPlayer.PlayingState) player.pause()
                             else player.play()
                         }
-                        background: Rectangle { color: parent.enabled ? "#3b82f6" : "#222533"; radius: 4 }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
-
-                    Button {
-                        text: "+1s"; Layout.preferredWidth: 38; Layout.preferredHeight: 28
-                        enabled: root.monitorMode !== "idle"
-                        opacity: enabled ? 1.0 : 0.35
-                        onClicked: player.position = player.position + 1000
-                        background: Rectangle { color: "#222533"; radius: 4 }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    EditorButton {
+                        text: "+1秒"
+                        leftPadding: 8
+                        rightPadding: 8
+                        Accessible.name: "前进一秒"
+                        onClicked: player.position += 1000
                     }
-
-                    Text {
-                        font.bold: true; font.pixelSize: 11
-                        color: root.monitorMode === "idle" ? "#64748b" : (root.monitorMode === "preview" ? "#38bdf8" : "#a78bfa")
+                    Label {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Text.AlignHCenter
+                        font.pixelSize: 11
+                        color: "#cbd5e1"
                         text: {
-                            if (root.monitorMode === "idle") {
-                                return "00:00 / 00:00 (待机)"
-                            } else if (root.monitorMode === "preview") {
-                                var curSec = player.position / 1000.0
-                                var totSec = (root.previewItem && root.previewItem.duration) ? root.previewItem.duration : (player.duration / 1000.0)
-                                return root.formatTime(curSec) + " / " + root.formatTime(totSec) + " (源片)"
-                            } else {
-                                return root.formatTime(player.position / 1000.0) + " / " + root.formatTime(root.totalMovieDuration)
-                            }
+                            const clip = root.monitorMode === "timeline" ? root.timelineClips[root.activeClipIndex] : null
+                            const total = clip ? clip.dur : player.duration / 1000
+                            const position = player.position / 1000 - (clip ? clip.start : 0)
+                            return root.formatTime(Math.min(total, Math.max(0, position))) + " / " + root.formatTime(total)
                         }
                     }
-
-                    Item { Layout.fillWidth: true }
-
-                    Button {
-                        visible: root.monitorMode === "timeline" && root.timelineClips.length > 0
-                        text: root.isContinuousPlay ? "连续" : "单段"
-                        Layout.preferredHeight: 28
+                    EditorButton {
+                        visible: root.monitorMode === "timeline"
+                        leftPadding: 8
+                        rightPadding: 8
+                        text: root.isContinuousPlay ? "顺序播放" : "循环本段"
                         onClicked: root.isContinuousPlay = !root.isContinuousPlay
-                        background: Rectangle { color: root.isContinuousPlay ? "#1d4ed8" : "#334155"; radius: 4 }
-                        contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     }
                 }
             }
@@ -1383,7 +1541,7 @@ ApplicationWindow {
 
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 115
+                        Layout.preferredHeight: 94
                         color: "#0f1016"
 
                         ListView {
@@ -1398,7 +1556,7 @@ ApplicationWindow {
                             delegate: Rectangle {
                                 readonly property bool isInvalidClip: root.missingPathsMap[modelData.src] === true
                                 width: Math.max(85, Math.min(200, Number(modelData.dur || 5) * 8))
-                                height: 100
+                                height: ListView.view.height
                                 radius: 6; clip: true
                                 color: isInvalidClip ? "#450a0a" : (root.activeClipIndex === index ? "#1e293b" : "#141620")
                                 border.color: isInvalidClip ? "#ef4444" : (root.activeClipIndex === index ? "#38bdf8" : "#2d3345")
@@ -1448,133 +1606,119 @@ ApplicationWindow {
                         }
                     }
 
-                    // 剪辑快捷操作栏 (大拇指触控区)
-                    RowLayout {
+                    ScrollView {
+                        id: mobileEditScroll
                         visible: root.timelineClips.length > 0
-                        Layout.fillWidth: true; Layout.preferredHeight: 36
-                        Layout.leftMargin: 8; Layout.rightMargin: 8
-                        spacing: 6
-
-                        Button {
-                            text: "↩ 撤销"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            enabled: root.canUndo; opacity: root.canUndo ? 1.0 : 0.35
-                            onClicked: root.undo()
-                            background: Rectangle { color: root.canUndo ? "#1e293b" : "#12131a"; radius: 6; border.color: root.canUndo ? "#475569" : "#1f2430" }
-                            contentItem: Text { text: parent.text; color: root.canUndo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                        Button {
-                            text: "↪ 重做"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            enabled: root.canRedo; opacity: root.canRedo ? 1.0 : 0.35
-                            onClicked: root.redo()
-                            background: Rectangle { color: root.canRedo ? "#1e293b" : "#12131a"; radius: 6; border.color: root.canRedo ? "#475569" : "#1f2430" }
-                            contentItem: Text { text: parent.text; color: root.canRedo ? "#ffffff" : "#64748b"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                        Button {
-                            text: "分割"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            onClicked: root.splitCurrentClip()
-                            background: Rectangle { color: "#854d0e"; radius: 6 }
-                            contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                        Button {
-                            text: "复制"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            onClicked: root.duplicateCurrentClip()
-                            background: Rectangle { color: "#1e3a8a"; radius: 6 }
-                            contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                        Button {
-                            text: "删除"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            onClicked: root.deleteCurrentClip()
-                            background: Rectangle { color: "#7f1d1d"; radius: 6 }
-                            contentItem: Text { text: parent.text; color: "#ffffff"; font.bold: true; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                        Button {
-                            text: "粗剪"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            onClicked: timelineTools.open()
-                            background: Rectangle { color: "#1e293b"; radius: 6 }
-                            contentItem: Text { text: parent.text; color: "#e2e8f0"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                        Button {
-                            text: "◀ 前移"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            onClicked: root.moveCurrentClip(-1)
-                            background: Rectangle { color: "#1e2230"; radius: 6 }
-                            contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                        Button {
-                            text: "后移 ▶"; Layout.fillWidth: true; Layout.preferredHeight: 36
-                            onClicked: root.moveCurrentClip(1)
-                            background: Rectangle { color: "#1e2230"; radius: 6 }
-                            contentItem: Text { text: parent.text; color: "#cbd5e1"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        }
-                    }
-
-                    // 触控微调面板
-                    Rectangle {
-                        id: mobInspectorPane
-                        visible: root.timelineClips.length > 0
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        Layout.margins: 8; color: "#14151d"; radius: 8; border.color: "#222533"
-
-                        readonly property var curMobClip: (root.activeClipIndex >= 0 && root.timelineClips.length > root.activeClipIndex) ? root.timelineClips[root.activeClipIndex] : null
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        Layout.leftMargin: 10
+                        Layout.rightMargin: 10
+                        contentWidth: availableWidth
+                        clip: true
 
                         ColumnLayout {
-                            anchors.fill: parent; anchors.margins: 8; spacing: 6
+                            width: mobileEditScroll.availableWidth
+                            spacing: 8
 
                             RowLayout {
                                 Layout.fillWidth: true
-                                Text { text: "起点 In:"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Text { text: mobInspectorPane.curMobClip ? root.formatTime(mobInspectorPane.curMobClip.start) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
+                                EditorButton { text: "撤销"; enabled: root.canUndo && !bridge.busy; onClicked: root.undo() }
+                                EditorButton { text: "重做"; enabled: root.canRedo && !bridge.busy; onClicked: root.redo() }
                                 Item { Layout.fillWidth: true }
-                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveIn(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
+                                EditorButton { text: "剪辑工具"; enabled: !bridge.busy; onClicked: timelineTools.open() }
                             }
 
-                            RowLayout {
+                            Rectangle {
+                                id: mobInspectorPane
                                 Layout.fillWidth: true
-                                Text { text: "终点 Out:"; color: "#cbd5e1"; font.pixelSize: 11; font.bold: true }
-                                Text { text: mobInspectorPane.curMobClip ? root.formatTime(mobInspectorPane.curMobClip.end) : "00:00"; color: "#38bdf8"; font.bold: true; font.pixelSize: 12 }
-                                Item { Layout.fillWidth: true }
-                                Button { text: "-2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(-2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "-0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(-0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+0.5s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(0.5); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                                Button { text: "+2s"; Layout.preferredWidth: 46; Layout.preferredHeight: 30; enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35; onClicked: root.stepActiveOut(2.0); background: Rectangle { color: "#222533"; radius: 4 } contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 11; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter } }
-                            }
+                                implicitHeight: mobileClipControls.implicitHeight + 20
+                                color: "#14161f"
+                                border.color: "#2a3040"
+                                radius: 8
+                                readonly property var clipData: root.timelineClips[root.activeClipIndex] || null
 
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Text { text: "镜头: " + (mobInspectorPane.curMobClip ? mobInspectorPane.curMobClip.filename : "未选中"); color: "#94a3b8"; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Text { text: "截取: " + (mobInspectorPane.curMobClip ? mobInspectorPane.curMobClip.dur_str : "0s"); color: "#60a5fa"; font.bold: true; font.pixelSize: 11 }
-                            }
+                                ColumnLayout {
+                                    id: mobileClipControls
+                                    anchors.fill: parent
+                                    anchors.margins: 10
+                                    spacing: 8
 
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                TextBadge {
-                                    visible: Boolean(mobInspectorPane.curMobClip)
-                                    color: "#3b82f6"
-                                    radius: 3
-                                    minimumHeight: 22
-                                    text: (mobInspectorPane.curMobClip && mobInspectorPane.curMobClip.orient === "vertical" ? "竖屏 9:16" : "横屏 16:9") + " ↻"
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.rotateActiveClip()
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: mobInspectorPane.clipData
+                                                ? "片段 " + (root.activeClipIndex + 1) + " · " + mobInspectorPane.clipData.dur_str
+                                                : "选择一个片段"
+                                            font.bold: true
+                                            color: "#f1f5f9"
+                                        }
+                                        EditorButton {
+                                            id: clipActionsButton
+                                            text: "片段操作 ▾"
+                                            enabled: !!mobInspectorPane.clipData && !bridge.busy
+                                            onClicked: clipActionsMenu.open()
+                                            Menu {
+                                                id: clipActionsMenu
+                                                y: clipActionsButton.height + 4
+                                                width: 166
+                                                palette.window: "#1e2431"
+                                                palette.text: "#f1f5f9"
+                                                palette.buttonText: "#f1f5f9"
+                                                palette.highlight: "#2563eb"
+                                                palette.highlightedText: "#ffffff"
+                                                MenuItem { text: "从当前画面分割"; onTriggered: root.splitCurrentClip() }
+                                                MenuItem { text: "复制片段"; onTriggered: root.duplicateCurrentClip() }
+                                                MenuItem { text: "往前移一位"; enabled: root.activeClipIndex > 0; onTriggered: root.moveCurrentClip(-1) }
+                                                MenuItem { text: "往后移一位"; enabled: root.activeClipIndex < root.timelineClips.length - 1; onTriggered: root.moveCurrentClip(1) }
+                                                MenuItem { text: "调整横竖方向"; onTriggered: root.rotateActiveClip() }
+                                                MenuSeparator {}
+                                                MenuItem { text: "从时间线删除"; onTriggered: root.deleteCurrentClip() }
+                                            }
+                                        }
                                     }
-                                }
-                                Item { Layout.fillWidth: true }
-                                Button {
-                                    text: "复制此段"; Layout.preferredHeight: 24
-                                    enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35
-                                    onClicked: root.duplicateCurrentClip()
-                                    background: Rectangle { color: parent.enabled ? "#1e3a8a" : "#222533"; radius: 3 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                                }
-                                Button {
-                                    text: "删除此段"; Layout.preferredHeight: 24
-                                    enabled: Boolean(mobInspectorPane.curMobClip); opacity: enabled ? 1.0 : 0.35
-                                    onClicked: root.deleteCurrentClip()
-                                    background: Rectangle { color: parent.enabled ? "#7f1d1d" : "#222533"; radius: 3 }
-                                    contentItem: Text { text: parent.text; color: "#ffffff"; font.pixelSize: 10; font.bold: true; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        visible: !!mobInspectorPane.clipData
+                                        text: mobInspectorPane.clipData ? mobInspectorPane.clipData.filename : ""
+                                        elide: Text.ElideMiddle
+                                        font.pixelSize: 11
+                                        color: "#9aa8bc"
+                                    }
+                                    Repeater {
+                                        model: ["开始", "结束"]
+                                        delegate: RowLayout {
+                                            id: trimRow
+                                            required property string modelData
+                                            required property int index
+                                            readonly property bool isStart: index === 0
+                                            Layout.fillWidth: true
+                                            spacing: 4
+                                            Label {
+                                                Layout.fillWidth: true
+                                                color: "#cbd5e1"
+                                                text: trimRow.modelData + "  " + (mobInspectorPane.clipData
+                                                    ? root.formatTime(trimRow.isStart ? mobInspectorPane.clipData.start : mobInspectorPane.clipData.end)
+                                                    : "–")
+                                            }
+                                            Repeater {
+                                                model: [-2, -0.5, 0.5, 2]
+                                                delegate: EditorButton {
+                                                    required property real modelData
+                                                    leftPadding: 5
+                                                    rightPadding: 5
+                                                    Layout.preferredWidth: 50
+                                                    text: (modelData > 0 ? "+" : "−") + Math.abs(modelData) + "秒"
+                                                    Accessible.name: trimRow.modelData + "时间" + text
+                                                    enabled: !!mobInspectorPane.clipData && !bridge.busy
+                                                    onClicked: {
+                                                        if (trimRow.isStart) root.stepActiveIn(modelData)
+                                                        else root.stepActiveOut(modelData)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2710,6 +2854,10 @@ ApplicationWindow {
                             id: desktopMonitorOutput
                             anchors.fill: parent
                             fillMode: VideoOutput.PreserveAspectFit
+                        }
+                        MonitorPlaceholder {
+                            anchors.fill: parent
+                            hasFrame: desktopMonitorOutput.sourceRect.width > 0
                         }
 
                         // 监视器待机空态蒙版
@@ -4032,11 +4180,11 @@ ApplicationWindow {
 
                 Label {
                     visible: !exportModal.isRunning
-                    text: "想导出什么？"
+                    text: "导出内容"
                     color: "#f1f5f9"
                     font.bold: true
                 }
-                ComboBox {
+                EditorCombo {
                     id: exportType
                     visible: !exportModal.isRunning
                     Layout.fillWidth: true
@@ -4071,7 +4219,7 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     Label {
-                        text: "保存到"
+                        text: "保存位置"
                         color: "#f1f5f9"
                     }
                     Label {
@@ -4080,8 +4228,8 @@ ApplicationWindow {
                         color: "#cbd5e1"
                         wrapMode: Text.WrapAnywhere
                     }
-                    Button {
-                        text: "更改…"
+                    EditorButton {
+                        text: "选择文件夹…"
                         enabled: !exportModal.isRunning && !bridge.busy
                         onClicked: {
                             exportFolderDialog.currentFolder = bridge.exportDirectoryUrl()
@@ -4090,7 +4238,7 @@ ApplicationWindow {
                     }
                 }
 
-                Button {
+                EditorButton {
                     visible: !exportModal.isRunning && (exportModal.isVideo || exportModal.isProject)
                     enabled: !exportModal.isRunning && !bridge.busy
                     Layout.fillWidth: true
@@ -4108,14 +4256,14 @@ ApplicationWindow {
                     spacing: 8
 
                     Label { text: "画面方向"; color: "#f1f5f9" }
-                    ComboBox {
+                    EditorCombo {
                         Layout.fillWidth: true
                         model: ["自动（推荐）", "横屏 16:9", "竖屏 9:16"]
                         currentIndex: root.canvasChoice === "horizontal" ? 1 : root.canvasChoice === "vertical" ? 2 : 0
                         onActivated: root.canvasChoice = currentIndex === 1 ? "horizontal" : currentIndex === 2 ? "vertical" : "auto"
                     }
                     Label { visible: exportModal.isVideo; text: "色彩"; color: "#f1f5f9" }
-                    ComboBox {
+                    EditorCombo {
                         visible: exportModal.isVideo
                         Layout.fillWidth: true
                         model: ["普通色彩 SDR（推荐）", "HDR（HLG）"]
@@ -4132,11 +4280,11 @@ ApplicationWindow {
                     RowLayout {
                         visible: exportModal.isVideo && root.targetColor === "8bit"
                         Layout.fillWidth: true
-                        Button {
+                        EditorButton {
                             text: root.exportLutPath ? "更换调色文件…" : "添加调色文件（可选）…"
                             onClicked: lutDialog.open()
                         }
-                        Button {
+                        EditorButton {
                             visible: root.exportLutPath !== ""
                             text: "移除调色"
                             onClicked: {
@@ -4156,11 +4304,11 @@ ApplicationWindow {
                     color: "#fbbf24"
                     text: exportModal.blockedReason
                 }
-                Button {
+                EditorButton {
                     visible: !exportModal.isRunning && !bridge.busy &&
                         ((exportModal.isVideo || exportModal.isProject) && !!exportModal.readiness.mediaError ||
-                         exportModal.isVideo && root.targetColor === "8bit" && exportModal.readiness.lutMissing ||
-                         exportModal.readiness.directoryUnavailable)
+                         exportModal.isVideo && root.targetColor === "8bit" && !!exportModal.readiness.lutMissing ||
+                         !!exportModal.readiness.directoryUnavailable)
                     text: "重新检查文件"
                     onClicked: exportModal.refreshReadiness()
                 }
@@ -4181,28 +4329,37 @@ ApplicationWindow {
             }
         }
 
-        footer: DialogButtonBox {
-            alignment: Qt.AlignRight
-            Button {
-                text: exportModal.isRunning ? "停止导出" : "关闭"
-                enabled: !exportModal.isStopping
-                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
-                onClicked: {
-                    if (!exportModal.isRunning) {
-                        exportModal.close()
-                        return
+        footer: Rectangle {
+            implicitHeight: 58
+            radius: 10
+            color: "#161822"
+            Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: "#2a2f42" }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
+                spacing: 8
+                Item { Layout.fillWidth: true }
+                EditorButton {
+                    text: exportModal.isRunning ? "停止导出" : "关闭"
+                    enabled: !exportModal.isStopping
+                    onClicked: {
+                        if (!exportModal.isRunning) {
+                            exportModal.close()
+                            return
+                        }
+                        exportModal.isStopping = true
+                        bridge.cancelExport()
                     }
-                    exportModal.isStopping = true
-                    bridge.cancelExport()
                 }
-            }
-            Button {
-                visible: !exportModal.isRunning
-                text: ["导出视频", "导出剪映草稿", "导出工程", "导出字幕", "导出清单", "导出清单"][Math.max(0, exportType.currentIndex)]
-                enabled: !exportModal.blockedReason && !exportModal.isRunning
-                highlighted: true
-                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
-                onClicked: exportModal.submitExport()
+                EditorButton {
+                    visible: !exportModal.isRunning
+                    text: ["导出视频", "导出剪映草稿", "导出工程", "导出字幕", "导出清单", "导出清单"][Math.max(0, exportType.currentIndex)]
+                    enabled: !exportModal.blockedReason && !exportModal.isRunning
+                    primary: true
+                    onClicked: exportModal.submitExport()
+                }
             }
         }
     }

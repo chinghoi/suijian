@@ -51,6 +51,7 @@ public slots:
     void cancelTranscription();
     void safeEjectDevice();
     QVariantMap exportReadiness(const QVariantList &clips) const;
+    QUrl localMediaUrl(const QString &path) const { return QUrl::fromLocalFile(path); }
     QString exportDirectory() const;
     QUrl exportDirectoryUrl() const;
     bool setExportDirectory(const QUrl &folder);

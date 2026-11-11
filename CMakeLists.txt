@@ -95,6 +95,9 @@ if (BUILD_TESTING)
 endif()
 
 if (APPLE)
+    enable_language(OBJCXX)
+    target_sources(DJIEditor PRIVATE src/MacWindowStyle.mm)
+    target_link_libraries(DJIEditor PRIVATE "-framework AppKit")
     set_target_properties(DJIEditor PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "随剪"

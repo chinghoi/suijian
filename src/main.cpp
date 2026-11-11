@@ -5,7 +5,12 @@
 #include <QIcon>
 #include <QPalette>
 #include <QColor>
+#include <QWindow>
 #include "MediaEngine.h"
+
+#ifdef Q_OS_MAC
+bool styleMacWindow(QWindow &window);
+#endif
 
 int main(int argc, char *argv[]) {
 #ifdef Q_OS_MAC
@@ -39,11 +44,22 @@ int main(int argc, char *argv[]) {
     MediaEngine bridge;
     engine.rootContext()->setContextProperty("bridge", &bridge);
 
+#ifdef Q_OS_MAC
+    engine.setInitialProperties({{QStringLiteral("visible"), false}});
+#endif
     engine.load(QUrl(QStringLiteral("qrc:/DJI/Editor/qml/AppWindow.qml")));
 
     if (engine.rootObjects().isEmpty()) {
         return -1;
     }
 
+#ifdef Q_OS_MAC
+    if (auto *window = qobject_cast<QWindow *>(engine.rootObjects().first())) {
+        const bool styled = styleMacWindow(*window);
+        window->show();
+        if (!styled)
+            styleMacWindow(*window);
+    }
+#endif
     return app.exec();
 }
