@@ -17,6 +17,7 @@
 #include <functional>
 #include <thread>
 #include <vector>
+#include "ScreeningCandidates.h"
 
 class MediaEngine : public QObject {
     Q_OBJECT
@@ -114,10 +115,11 @@ private:
     QString exportMediaError(const QVariantList &clips) const;
     QVariantMap probeFile(const QString &filepath);
     QList<QPair<double, double>> detectVoiceSegments(const QString &audioOrVideoPath, double noiseDb = -30.0, double minSilenceDur = 0.6, double minSpeechDur = 0.3, QString *error = nullptr, double duration = 0, const std::function<void(double)> &onProgress = {});
-    QList<QPair<double, double>> detectVisualSegments(const QString &path, double duration, QString &error, const std::function<void(double)> &onProgress = {});
+    std::vector<screening::Candidate> detectVisualSegments(const QString &path, double duration, QString &error, const std::function<void(double, bool)> &onProgress, bool includeAudio, bool tenBit);
+    std::vector<screening::Candidate> detectVisualSegmentsPass(const QString &path, double duration, QString &error, const std::function<void(double)> &onProgress, bool includeAudio, bool hardware, const QString &downloadFormat = {}, bool preview = false);
     bool saveAiCheckpoint(const QStringList &selectedPaths, int currentIndex, const QVariantList &tasks, const QString &mode, double targetDurationSec, const QJsonObject &fingerprints);
-    QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode, double targetDurationSec);
-    void clearAiCheckpoint();
+    QPair<int, QVariantList> loadAiCheckpoint(const QStringList &selectedPaths, const QString &mode);
+    void clearAiCheckpoint(const QString &mode);
     QVariantList transcriptSegmentsForClip(const QVariantMap &clip) const;
     QString transcriptTextForClip(const QVariantMap &clip) const;
 

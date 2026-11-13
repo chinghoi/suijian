@@ -46,6 +46,35 @@ context.clipIdCounter = 0;
 context.root = context;
 vm.createContext(context);
 vm.runInContext(functions.join('\n'), context);
+context.mediaPool = [{path:'/oct25', date:'2026-10-25', duration:60},
+    {path:'/oct31', date:'2026-10-31', duration:120}];
+context.selectedPathsMap = {'/oct25':true, '/oct31':true};
+context.activeDate = '2026-10-25'; context.recalcSelectionStats();
+assert.equal(context.selectedCount, 1);
+assert.equal(context.selectedTotalSeconds, 60);
+assert.deepEqual(Array.from(context.getSelectedPathsList()), ['/oct25']);
+assert.equal(context.getSelectedList().length, 1);
+context.clearAllInActiveFilter();
+assert.equal(context.selectedCount, 0);
+assert.deepEqual(Array.from(context.getSelectedPathsList()), []);
+context.invertSelectionInActiveFilter();
+assert.deepEqual(Array.from(context.getSelectedPathsList()), ['/oct25']);
+context.activeDate = '全部'; context.recalcSelectionStats();
+assert.equal(context.selectedCount, 2);
+assert.deepEqual(Array.from(context.getSelectedPathsList()), ['/oct25', '/oct31']);
+const datedProject = {
+    clips: [], mediaPool: context.mediaPool, dates: ['全部', '2026-10-25', '2026-10-31'],
+    activeDate: '2026-10-25', selectedPaths: context.selectedPathsMap,
+    screening: {mode: 0, duration: 2, retention: 30}
+};
+context.restoreProject(datedProject);
+assert.equal(context.screeningBudgetSeconds(), 18);
+assert.deepEqual(Array.from(context.getSelectedPathsList()), ['/oct25']);
+const savedScreening = context.projectState();
+context.restoreProject({clips: []});
+assert.equal(context.screeningBudgetSeconds(), 240);
+context.restoreProject(savedScreening);
+assert.equal(context.screeningBudgetSeconds(), 18);
 const a = {src:'/a.mov', start:0, end:2, dur:2};
 const b = {src:'/b.mov', start:4, end:7, dur:3};
 context.timelineClips = [b]; context.playingClip = a; context.activeClipIndex = 0;

@@ -102,7 +102,12 @@ ApplicationWindow {
     property var mediaPool: []
     property var datesList: ["全部"]
     property string activeDate: "全部"
+    onActiveDateChanged: {
+        recalcSelectionStats()
+        if (projectReady && !restoringProject) recoveryTimer.restart()
+    }
     property var selectedPathsMap: ({})
+    onSelectedPathsMapChanged: if (projectReady && !restoringProject) recoveryTimer.restart()
     property int selectedCount: 0
     property string selectedDurationStr: "00:00"
     property real selectedTotalSeconds: 0.0
@@ -117,6 +122,12 @@ ApplicationWindow {
     property bool projectReady: false
     property bool restoringProject: false
     property bool allowClose: false
+    property int screeningModeIndex: 0
+    property int screeningDurationIndex: 0
+    property real screeningRetention: 100
+    onScreeningModeIndexChanged: if (projectReady && !restoringProject) recoveryTimer.restart()
+    onScreeningDurationIndexChanged: if (projectReady && !restoringProject) recoveryTimer.restart()
+    onScreeningRetentionChanged: if (projectReady && !restoringProject) recoveryTimer.restart()
     readonly property bool canChangeProject: !bridge.busy && !root.isImporting
     property int clipIdCounter: 0
     function nextClipId() { return Date.now().toString() + "_" + (++root.clipIdCounter).toString() }
@@ -129,8 +140,15 @@ ApplicationWindow {
     onMediaPoolChanged: if (projectReady) recoveryTimer.restart()
     function projectState() {
         return {clips: timelineClips, mediaPool: mediaPool, dates: datesList,
-                selectedPaths: selectedPathsMap, canvas: canvasChoice, color: targetColor,
+                selectedPaths: selectedPathsMap, activeDate: activeDate, canvas: canvasChoice, color: targetColor,
+                screening: {mode: screeningModeIndex, duration: screeningDurationIndex, retention: screeningRetention},
                 active: activeClipIndex, beatMusic: beatMusic, lut: exportLutPath}
+    }
+    function screeningBudgetSeconds() {
+        if (screeningDurationIndex === 0) return 240
+        if (screeningDurationIndex === 1) return 90
+        if (screeningRetention >= 100) return 0
+        return Math.max(10, getEffectiveTotalSeconds() * screeningRetention / 100)
     }
     property string exportLutPath: ""
     function requestNewProject() {
@@ -159,10 +177,15 @@ ApplicationWindow {
         root.monitorPriming = false
         root.mediaPool = project.mediaPool || []
         root.datesList = project.dates || ["全部"]
-        root.activeDate = "全部"
+        root.activeDate = root.datesList.indexOf(project.activeDate) >= 0 ? project.activeDate : "全部"
         root.currentSourceLabel = root.mediaPool.length ? "已加载" : "未选择"
         root.speechAnnotations = ({})
         root.selectedPathsMap = project.selectedPaths || ({})
+        const screening = project.screening || ({})
+        root.screeningModeIndex = [0, 1, 2, 3].indexOf(screening.mode) >= 0 ? screening.mode : 0
+        root.screeningDurationIndex = [0, 1, 2].indexOf(screening.duration) >= 0 ? screening.duration : 0
+        root.screeningRetention = typeof screening.retention === "number" && isFinite(screening.retention)
+                ? Math.max(10, Math.min(100, screening.retention)) : 100
         root.canvasChoice = project.canvas || "auto"
         root.targetColor = project.color || "8bit"
         root.exportLutPath = project.lut || ""
@@ -533,8 +556,9 @@ ApplicationWindow {
     function recalcSelectionStats() {
         var count = 0
         var totalSec = 0
-        for (var i = 0; i < root.mediaPool.length; i++) {
-            var m = root.mediaPool[i]
+        var filtered = root.getFilteredMedia()
+        for (var i = 0; i < filtered.length; i++) {
+            var m = filtered[i]
             if (root.selectedPathsMap[m.path]) {
                 count++
                 totalSec += (m.duration || 0)
@@ -548,12 +572,7 @@ ApplicationWindow {
     }
 
     function getEffectiveTotalSeconds() {
-        if (root.selectedTotalSeconds > 0) return root.selectedTotalSeconds
-        var total = 0
-        for (var i = 0; i < root.mediaPool.length; i++) {
-            total += (root.mediaPool[i].duration || 0)
-        }
-        return total > 0 ? total : 0
+        return root.selectedTotalSeconds > 0 ? root.selectedTotalSeconds : 0
     }
 
     function getSelectedCount() {
@@ -582,24 +601,20 @@ ApplicationWindow {
 
     function getSelectedPathsList() {
         var list = []
-        for (var i = 0; i < root.mediaPool.length; i++) {
-            var p = root.mediaPool[i].path
+        var filtered = root.getFilteredMedia()
+        for (var i = 0; i < filtered.length; i++) {
+            var p = filtered[i].path
             if (root.selectedPathsMap[p]) list.push(p)
-        }
-        // 若用户未手动单选特定素材，默认针对当前媒体池全部素材（避免空集导致立即返回空退出）
-        if (list.length === 0 && root.mediaPool.length > 0) {
-            for (var j = 0; j < root.mediaPool.length; j++) {
-                list.push(root.mediaPool[j].path)
-            }
         }
         return list
     }
 
     function getSelectedList() {
         var list = []
-        for (var i = 0; i < root.mediaPool.length; i++) {
-            if (root.selectedPathsMap[root.mediaPool[i].path]) {
-                list.push(root.mediaPool[i])
+        var filtered = root.getFilteredMedia()
+        for (var i = 0; i < filtered.length; i++) {
+            if (root.selectedPathsMap[filtered[i].path]) {
+                list.push(filtered[i])
             }
         }
         return list
@@ -2167,8 +2182,10 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             enabled: !aiModal.isRunning
                             opacity: enabled ? 1.0 : 0.45
+                            currentIndex: root.screeningModeIndex
+                            onActivated: root.screeningModeIndex = currentIndex
                             model: [
-                                "综合筛选（声音片段 + 画面合格片段）",
+                                "综合筛选（保护疑似对白和合格画面）",
                                 "口播转写粗剪（生成字幕，去除相邻重复句）",
                                 "画面筛选（曝光、细节、画面变化）",
                                 "声音活动切分（按音量检测静音）"
@@ -2220,11 +2237,27 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             enabled: !aiModal.isRunning
                             opacity: enabled ? 1.0 : 0.45
+                            currentIndex: root.screeningDurationIndex
+                            onActivated: root.screeningDurationIndex = currentIndex
                             model: [
-                                "标准成片节奏 (约 3 ~ 5 分钟 · 完整叙事与空镜)",
-                                "短视频快节奏 (约 1 ~ 2 分钟 · 提取核心高光)",
-                                "宽松完整保留 (按比例保留 · 仅过滤废片与重复错句)"
+                                "标准（最多约 4 分钟）",
+                                "短视频（最多约 90 秒）",
+                                "按比例保留"
                             ]
+                        }
+                        Label {
+                            visible: root.screeningDurationIndex === 2
+                            text: "保留比例：" + Math.round(root.screeningRetention) + "%"
+                        }
+                        Slider {
+                            visible: root.screeningDurationIndex === 2
+                            enabled: !aiModal.isRunning
+                            Layout.fillWidth: true
+                            from: 10
+                            to: 100
+                            stepSize: 5
+                            value: root.screeningRetention
+                            onMoved: root.screeningRetention = value
                         }
 
                         // 开始初筛大按钮
@@ -2239,9 +2272,9 @@ ApplicationWindow {
                                     if (aiModal.isPausing) return "正在暂停，等待停止读取…"
                                     return "AI 初筛全速进行中..."
                                 }
-                                return "开始 AI 智能初筛 (" + (root.selectedCount > 0 ? ("已选 " + root.selectedCount + " 个") : ("全部 " + root.mediaPool.length + " 个素材")) + ")"
+                                return "开始 AI 智能初筛 (已选 " + root.selectedCount + " 个)"
                             }
-                            enabled: root.mediaPool.length > 0 && !aiModal.isRunning && !bridge.busy
+                            enabled: root.selectedCount > 0 && !aiModal.isRunning && !bridge.busy
                             opacity: enabled ? 1.0 : 0.45
                             onClicked: {
                                 var mode = "3"
@@ -2250,10 +2283,7 @@ ApplicationWindow {
                                 else if (mobAiModeCombo.currentIndex === 2) mode = "1"
                                 else if (mobAiModeCombo.currentIndex === 3) mode = "2"
 
-                                var maxDur = 240.0
-                                if (mobTargetDurCombo.currentIndex === 0) maxDur = 240.0
-                                else if (mobTargetDurCombo.currentIndex === 1) maxDur = 90.0
-                                else if (mobTargetDurCombo.currentIndex === 2) maxDur = 0.0
+                                var maxDur = root.screeningBudgetSeconds()
 
                                 var canvasMode = "horizontal"
                                 if (mobAiCanvasCombo.currentIndex === 0) canvasMode = root.getAutoMasterCanvas()
@@ -2286,7 +2316,7 @@ ApplicationWindow {
                         }
 
                         Text {
-                            text: "提示：画面筛选采用每秒两帧的基础质量检查，可能误判快速运动或低细节画面；声音筛选不识别人声内容，请检查结果。"
+                            text: "综合筛选按声音活动估计对白，优先保留完整片段。初筛结果可以在时间线里调整。"
                             color: "#64748b"; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
                         }
                     }
@@ -3573,8 +3603,10 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 enabled: !aiModal.isRunning
                 opacity: enabled ? 1.0 : 0.45
+                currentIndex: root.screeningModeIndex
+                onActivated: root.screeningModeIndex = currentIndex
                 model: [
-                    "综合筛选（声音片段 + 画面合格片段）",
+                    "综合筛选（保护疑似对白和合格画面）",
                     "口播转写粗剪（生成字幕，去除相邻重复句）",
                     "画面筛选（曝光、细节、画面变化）",
                     "声音活动切分（按音量检测静音）"
@@ -3625,6 +3657,8 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 enabled: !aiModal.isRunning
                 opacity: enabled ? 1.0 : 0.45
+                currentIndex: root.screeningDurationIndex
+                onActivated: root.screeningDurationIndex = currentIndex
                 model: [
                     "标准（最多约 4 分钟）",
                     "短视频（最多约 90 秒）",
@@ -3676,7 +3710,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: retentionSlider.value = modelData.val
+                                        onClicked: root.screeningRetention = modelData.val
                                     }
                                 }
                             }
@@ -3690,7 +3724,7 @@ ApplicationWindow {
                         property real from: 10
                         property real to: 100
                         property real stepSize: 5
-                        property real value: 100
+                        readonly property real value: root.screeningRetention
 
                         Rectangle {
                             id: track
@@ -3733,7 +3767,7 @@ ApplicationWindow {
                                 var ratio = Math.max(0, Math.min(1.0, mouseX / retentionSlider.width))
                                 var raw = retentionSlider.from + ratio * (retentionSlider.to - retentionSlider.from)
                                 var stepped = Math.round(raw / retentionSlider.stepSize) * retentionSlider.stepSize
-                                retentionSlider.value = Math.max(retentionSlider.from, Math.min(retentionSlider.to, stepped))
+                                root.screeningRetention = Math.max(retentionSlider.from, Math.min(retentionSlider.to, stepped))
                             }
 
                             onPressed: function(mouse) { updateVal(mouse.x) }
@@ -3920,7 +3954,7 @@ ApplicationWindow {
                         }
                         return "开始 / 续接初筛"
                     }
-                    enabled: !aiModal.isRunning && !bridge.busy && root.mediaPool.length > 0
+                    enabled: !aiModal.isRunning && !bridge.busy && root.selectedCount > 0
                     opacity: enabled ? 1.0 : 0.45
                     onClicked: {
                         var mode = "3"
@@ -3929,19 +3963,7 @@ ApplicationWindow {
                         else if (aiModeCombo.currentIndex === 2) mode = "1"
                         else if (aiModeCombo.currentIndex === 3) mode = "2"
 
-                        var maxDur = 240.0
-                        if (targetDurationCombo.currentIndex === 0) {
-                            maxDur = 240.0
-                        } else if (targetDurationCombo.currentIndex === 1) {
-                            maxDur = 90.0
-                        } else if (targetDurationCombo.currentIndex === 2) {
-                            if (retentionSlider.value >= 100) {
-                                maxDur = 0.0
-                            } else {
-                                var baseSec = root.getEffectiveTotalSeconds()
-                                maxDur = Math.max(10.0, baseSec * (retentionSlider.value / 100.0))
-                            }
-                        }
+                        var maxDur = root.screeningBudgetSeconds()
 
                         var canvasMode = "horizontal"
                         if (aiCanvasCombo.currentIndex === 0) {

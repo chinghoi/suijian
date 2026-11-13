@@ -13,7 +13,7 @@ using Span = std::pair<double, double>;
 // A conservative technical-quality heuristic, not an aesthetic or semantic model.
 // Frames are display-oriented, grayscale, sampled at 2 fps by the caller.
 inline bool usableFrame(const std::uint8_t *frame, const std::uint8_t *previous,
-                        int width, int height) {
+                        int width, int height, bool *hasPicture = nullptr) {
     if (!frame || width < 2 || height < 2) return false;
     const int count = width * height;
     double sum = 0, squares = 0, gradient = 0, motion = 0;
@@ -29,7 +29,9 @@ inline bool usableFrame(const std::uint8_t *frame, const std::uint8_t *previous,
         if (previous) motion += std::abs(value - previous[i]);
     }
     const double variance = squares / count - std::pow(sum / count, 2);
-    return dark < count * 0.92 && bright < count * 0.92 && variance >= 9.0
+    const bool picture = dark < count * 0.92 && bright < count * 0.92 && variance >= 9.0;
+    if (hasPicture) *hasPicture = picture;
+    return picture
         && gradient / (2 * count - width - height) >= 1.8
         && (!previous || motion / (count * 255.0) < 0.16);
 }

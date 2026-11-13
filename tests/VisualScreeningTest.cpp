@@ -1,4 +1,4 @@
-#include "VisualScreening.h"
+#include "ScreeningCandidates.h"
 #include <iostream>
 #include <stdexcept>
 
@@ -16,5 +16,13 @@ int main() {
     require(!screening::usableFrame(inverse.data(), texture.data(), w,h), "large changes retained");
     auto spans = screening::mergeSpans({{4,8},{-1,2},{1,3},{8,12},{6,5}},10);
     require(spans == std::vector<screening::Span>{{0,3},{4,10}}, "merge crossed a gap or duration boundary");
+    std::vector<screening::AudioLevel> levels;
+    for (int i = 0; i < 200; ++i) {
+        const double t = i * screening::audioWindow;
+        const bool talking = (t >= 1 && t < 2) || (t >= 3.5 && t < 5);
+        levels.push_back({t, talking ? -34.0 : -70.0});
+    }
+    const auto talk = screening::possibleDialogue(levels, 10);
+    require(talk.size() == 1, "a short conversational pause split the dialogue");
     std::cout << "Visual screening checks passed\n";
 }
