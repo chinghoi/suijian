@@ -51,7 +51,8 @@ public slots:
     void transcribeTimeline(const QVariantList &clips);
     void cancelTranscription();
     void safeEjectDevice();
-    QVariantMap exportReadiness(const QVariantList &clips) const;
+    QVariantMap exportReadiness(const QVariantList &clips, const QString &masterCanvas = QString(), const QString &targetColor = QString()) const;
+    void clearExportCheckpoint();
     QUrl localMediaUrl(const QString &path) const { return QUrl::fromLocalFile(path); }
     bool openOutputFolder(const QString &path) const;
     QString exportDirectory() const;

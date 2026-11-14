@@ -1274,7 +1274,54 @@ QString MediaEngine::exportMediaError(const QVariantList &clips) const {
     return {};
 }
 
-QVariantMap MediaEngine::exportReadiness(const QVariantList &clips) const {
+static QString computeExportTimelineHash(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor, const QString &lutPath) {
+    QCryptographicHash fingerprint(QCryptographicHash::Sha256);
+    fingerprint.addData(masterCanvas.toUtf8());
+    fingerprint.addData(targetColor.toUtf8());
+    fingerprint.addData(lutPath.toUtf8());
+    for (const auto &clip : clips) {
+        const auto c = clip.toMap();
+        fingerprint.addData(c.value("src").toString().toUtf8());
+        fingerprint.addData(QByteArray::number(c.value("start").toDouble(), 'f', 3));
+        fingerprint.addData(QByteArray::number(c.value("dur").toDouble(), 'f', 3));
+    }
+    return fingerprint.result().toHex();
+}
+
+static QString exportCheckpointDir() {
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + "/suijian_export_slices";
+}
+
+static QString exportCheckpointManifestPath() {
+    return exportCheckpointDir() + "/export_checkpoint.json";
+}
+
+static int getExportCheckpointResumeCount(const QString &timelineHash, int totalClips, QStringList *outSlices = nullptr) {
+    if (timelineHash.isEmpty() || totalClips <= 0) return 0;
+    QFile manifestFile(exportCheckpointManifestPath());
+    if (!manifestFile.open(QIODevice::ReadOnly)) return 0;
+    const auto doc = QJsonDocument::fromJson(manifestFile.readAll());
+    const auto obj = doc.object();
+    if (obj.value("hash").toString() != timelineHash) return 0;
+    const auto done = obj.value("slices").toArray();
+    int count = 0;
+    for (int k = 0; k < done.size() && count < totalClips; ++k) {
+        const QString slicePath = done[k].toString();
+        if (QFile::exists(slicePath) && QFileInfo(slicePath).size() > 0) {
+            if (outSlices) outSlices->append(slicePath);
+            count++;
+        } else {
+            break;
+        }
+    }
+    return count;
+}
+
+void MediaEngine::clearExportCheckpoint() {
+    QDir(exportCheckpointDir()).removeRecursively();
+}
+
+QVariantMap MediaEngine::exportReadiness(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor) const {
     bool hasSubtitles = false;
     for (const QVariant &item : clips) {
         const auto clip = item.toMap();
@@ -1290,9 +1337,15 @@ QVariantMap MediaEngine::exportReadiness(const QVariantList &clips) const {
         }
         if (hasSubtitles) break;
     }
+    int resumeCount = 0;
+    if (!masterCanvas.isEmpty() && !targetColor.isEmpty() && !clips.isEmpty()) {
+        const QString timelineHash = computeExportTimelineHash(clips, masterCanvas, targetColor, m_lutPath);
+        resumeCount = getExportCheckpointResumeCount(timelineHash, clips.size());
+    }
     return {{"mediaError", exportMediaError(clips)}, {"hasSubtitles", hasSubtitles},
             {"directoryUnavailable", !writableExportDirectory(exportDirectory())},
-            {"lutMissing", !m_lutPath.isEmpty() && !readableExportFile(m_lutPath)}};
+            {"lutMissing", !m_lutPath.isEmpty() && !readableExportFile(m_lutPath)},
+            {"resumeCount", resumeCount}};
 }
 
 void MediaEngine::startExport(const QVariantList &clips, const QString &masterCanvas, const QString &targetColor) {
@@ -1338,20 +1391,47 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
         struct RunningGuard { MediaEngine *engine; ~RunningGuard() {
             QMetaObject::invokeMethod(engine, [e = engine] { e->m_exportRunning = false; emit e->busyChanged(); if (e->m_exportCancelled) emit e->exportCancelled(); }, Qt::QueuedConnection);
         } } guard{this};
-        QTemporaryDir tempDir(QDir::tempPath() + "/suijian_export_XXXXXX");
-        if (!tempDir.isValid()) {
-            QMetaObject::invokeMethod(this, [this]() { emit exportFailed("无法创建临时目录"); });
-            return;
+
+        // --- Export checkpoint support ---
+        // Use a stable directory under Caches so slices survive cancellation.
+        // A manifest (export_checkpoint.json) records which slices are done.
+        const QString scratch = exportCheckpointDir();
+        QDir().mkpath(scratch);
+        const QString manifestPath = exportCheckpointManifestPath();
+        const QString timelineHash = computeExportTimelineHash(clips, masterCanvas, targetColor, lutPath);
+
+        // Try to load an existing checkpoint.
+        QStringList renderedSlices;
+        int resumeFrom = getExportCheckpointResumeCount(timelineHash, clips.size(), &renderedSlices);
+        if (resumeFrom <= 0) {
+            renderedSlices.clear();
+            QDir(scratch).removeRecursively();
+            QDir().mkpath(scratch);
+        } else if (resumeFrom < clips.size()) {
+            QMetaObject::invokeMethod(this, [this, resumeFrom, total = clips.size()]() {
+                const double pVal = (static_cast<double>(resumeFrom) / total) * 92.0;
+                emit exportProgress(pVal, QString("从检查点恢复，跳过已完成的 %1/%2 个切片").arg(resumeFrom).arg(total));
+            });
         }
-        QString scratch = tempDir.path();
+
+        // Helper to persist the checkpoint manifest after each completed slice.
+        auto saveExportCheckpoint = [&]() {
+            QJsonObject obj;
+            obj["hash"] = timelineHash;
+            QJsonArray arr;
+            for (const auto &s : renderedSlices) arr.append(s);
+            obj["slices"] = arr;
+            QFile f(manifestPath);
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        };
 
         int total = clips.size();
-        QStringList renderedSlices;
         bool checkedFilters = false;
         bool hasToneMapping = false;
 
-        for (int i = 0; i < total; ++i) {
-            if (m_exportCancelled) { QDir(scratch).removeRecursively(); return; }
+        for (int i = resumeFrom; i < total; ++i) {
+            if (m_exportCancelled) { saveExportCheckpoint(); return; }
             QVariantMap t = clips[i].toMap();
             double pVal = (static_cast<double>(i) / total) * 92.0;
             QString fn = t.value("filename").toString();
@@ -1414,12 +1494,13 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             QString sName = QString("slice_%1.mp4").arg(i, 4, 10, QChar('0'));
             QString sPath = scratch + "/" + sName;
 
-            QStringList args = {
-                "-y",
-                "-ss", QString::number(t.value("start").toDouble(), 'f', 3),
-                "-t", QString::number(dur, 'f', 3),
-                "-i", t.value("src").toString()
-            };
+            QStringList args = {"-y"};
+#if defined(Q_OS_MAC)
+            args << "-hwaccel" << "videotoolbox";
+#endif
+            args << "-ss" << QString::number(t.value("start").toDouble(), 'f', 3)
+                 << "-t" << QString::number(dur, 'f', 3)
+                 << "-i" << t.value("src").toString();
             if (!hasAudio) args << "-f" << "lavfi" << "-t" << QString::number(dur, 'f', 3) << "-i" << "anullsrc=r=48000:cl=stereo";
 
             const int w = masterCanvas == "vertical" ? 2160 : 3840;
@@ -1499,21 +1580,22 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             QProcess proc;
             proc.start("ffmpeg", args);
             while (!proc.waitForFinished(250)) {
-                if (m_exportCancelled) { proc.kill(); proc.waitForFinished(); QDir(scratch).removeRecursively(); return; }
+                if (m_exportCancelled) { proc.kill(); proc.waitForFinished(); saveExportCheckpoint(); return; }
                 if (proc.state() == QProcess::NotRunning) break;
             }
-            if (m_exportCancelled) { QDir(scratch).removeRecursively(); return; }
+            if (m_exportCancelled) { saveExportCheckpoint(); return; }
             if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0 || !QFile::exists(sPath) || QFileInfo(sPath).size() == 0) {
                 QString error = QString::fromUtf8(proc.readAllStandardError()).right(1200);
-                QDir(scratch).removeRecursively();
+                // Keep completed slices for resume; only report the failure.
+                saveExportCheckpoint();
                 QMetaObject::invokeMethod(this, [this, fn, error]() { emit exportFailed(QString("镜头 %1 导出失败：%2").arg(fn, error)); });
                 return;
             }
             renderedSlices.append(sPath);
+            saveExportCheckpoint();
         }
 
         if (renderedSlices.isEmpty()) {
-            QDir(scratch).removeRecursively();
             QMetaObject::invokeMethod(this, [this]() { emit exportFailed("压制失败，没有切片成功生成"); });
             return;
         }
@@ -1543,15 +1625,14 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
         QProcess concatProc;
         concatProc.start("ffmpeg", concatArgs);
         while (!concatProc.waitForFinished(250)) {
-            if (m_exportCancelled) { concatProc.kill(); concatProc.waitForFinished(); QFile::remove(out); QDir(scratch).removeRecursively(); return; }
+            if (m_exportCancelled) { concatProc.kill(); concatProc.waitForFinished(); QFile::remove(out); return; }
             if (concatProc.state() == QProcess::NotRunning) break;
         }
-        if (m_exportCancelled) { QFile::remove(out); QDir(scratch).removeRecursively(); return; }
+        if (m_exportCancelled) { QFile::remove(out); return; }
         bool concatOk = concatProc.exitStatus() == QProcess::NormalExit && concatProc.exitCode() == 0;
 
         if (!(concatOk && QFile::exists(out) && QFileInfo(out).size() > 0)) {
             QFile::remove(out);
-            QDir(scratch).removeRecursively();
             QMetaObject::invokeMethod(this, [this]() {
                 emit exportFailed("最终合并失败，请检查硬盘空间");
             });
@@ -1560,7 +1641,6 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
         if (!beatMusic.isEmpty()) {
             if (!QFileInfo::exists(beatMusic)) {
                 QFile::remove(out);
-                QDir(scratch).removeRecursively();
                 QMetaObject::invokeMethod(this, [this]() {
                     emit exportFailed("卡点音乐已不在原路径，成片未保留");
                 });
@@ -1574,14 +1654,13 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
                 "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "320k",
                 "-ar", "48000", "-ac", "2", "-movflags", "+faststart", mixed});
             while (!mix.waitForFinished(250)) {
-                if (m_exportCancelled) { mix.kill(); mix.waitForFinished(); QFile::remove(out); QDir(scratch).removeRecursively(); return; }
+                if (m_exportCancelled) { mix.kill(); mix.waitForFinished(); QFile::remove(out); return; }
                 if (mix.state() == QProcess::NotRunning) break;
             }
-            if (m_exportCancelled) { QFile::remove(out); QDir(scratch).removeRecursively(); return; }
+            if (m_exportCancelled) { QFile::remove(out); return; }
             if (mix.exitStatus() != QProcess::NormalExit || mix.exitCode() != 0 || !QFile::exists(mixed) || QFileInfo(mixed).size() == 0) {
                 const QString error = QString::fromUtf8(mix.readAllStandardError()).right(800);
                 QFile::remove(out);
-                QDir(scratch).removeRecursively();
                 QMetaObject::invokeMethod(this, [this, error]() {
                     emit exportFailed(QString("卡点音乐没有写进成片：%1").arg(error));
                 });
@@ -1589,11 +1668,11 @@ void MediaEngine::startExport(const QVariantList &clips, const QString &masterCa
             }
             QFile::remove(out);
             if (!QFile::rename(mixed, out)) {
-                QDir(scratch).removeRecursively();
                 QMetaObject::invokeMethod(this, [this]() { emit exportFailed("无法替换成片音轨"); });
                 return;
             }
         }
+        // Export succeeded — clean up slices and checkpoint.
         QDir(scratch).removeRecursively();
         QMetaObject::invokeMethod(this, [this, out]() {
             emit exportProgress(100.0, "压制成功落盘！");

@@ -4202,7 +4202,7 @@ ApplicationWindow {
         }
 
         function refreshReadiness() {
-            readiness = bridge.exportReadiness(root.timelineClips)
+            readiness = bridge.exportReadiness(root.timelineClips, chosenCanvas, root.targetColor)
         }
 
         function submitExport() {
@@ -4251,6 +4251,37 @@ ApplicationWindow {
                     text: root.timelineClips.length + " 个镜头 · " + root.formatDuration(root.totalMovieDuration)
                     color: "#cbd5e1"
                     Layout.fillWidth: true
+                }
+
+                Rectangle {
+                    visible: !exportModal.isRunning && !exportModal.isFinished && exportModal.isVideo && (exportModal.readiness && exportModal.readiness.resumeCount > 0)
+                    Layout.fillWidth: true
+                    implicitHeight: resumeRow.implicitHeight + 16
+                    color: "#0f172a"
+                    radius: 6
+                    border.color: "#38bdf8"
+                    border.width: 1
+
+                    RowLayout {
+                        id: resumeRow
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        spacing: 8
+                        Label {
+                            text: "⚡ 发现压制检查点：已完成 " + (exportModal.readiness ? exportModal.readiness.resumeCount : 0) + " / " + root.timelineClips.length + " 个镜头"
+                            color: "#38bdf8"
+                            font.pixelSize: 12
+                            font.bold: true
+                            Layout.fillWidth: true
+                        }
+                        EditorButton {
+                            text: "从头重压"
+                            onClicked: {
+                                bridge.clearExportCheckpoint()
+                                exportModal.refreshReadiness()
+                            }
+                        }
+                    }
                 }
 
                 Label {
@@ -4460,7 +4491,9 @@ ApplicationWindow {
                 }
                 EditorButton {
                     visible: !exportModal.isRunning && !exportModal.isFinished
-                    text: ["导出视频", "导出剪映草稿", "导出工程", "导出字幕", "导出清单", "导出清单"][Math.max(0, exportType.currentIndex)]
+                    text: (exportType.currentIndex === 0 && exportModal.readiness && exportModal.readiness.resumeCount > 0)
+                        ? "继续导出视频（跳过前 " + exportModal.readiness.resumeCount + " 镜）"
+                        : ["导出视频", "导出剪映草稿", "导出工程", "导出字幕", "导出清单", "导出清单"][Math.max(0, exportType.currentIndex)]
                     enabled: !exportModal.blockedReason && !exportModal.isRunning
                     primary: true
                     onClicked: exportModal.submitExport()

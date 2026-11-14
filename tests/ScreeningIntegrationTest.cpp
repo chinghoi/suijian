@@ -287,6 +287,9 @@ int main(int argc, char **argv) {
     require(readiness.value("hasSubtitles").toBool() && readiness.value("mediaError").toString().isEmpty()
         && !readiness.value("directoryUnavailable").toBool(), "valid export incorrectly blocked");
     require(!engine.exportReadiness({firstClip}).value("hasSubtitles").toBool(), "missing subtitles not detected");
+    engine.clearExportCheckpoint();
+    require(engine.exportReadiness({captionedClip}, "horizontal", "8bit").value("resumeCount").toInt() == 0,
+            "empty checkpoint incorrectly reported resume slices");
     QVariantMap offlineClip = captionedClip;
     offlineClip["src"] = temp.filePath("offline.mp4");
     const auto offline = engine.exportReadiness({offlineClip});
